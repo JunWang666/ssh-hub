@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>授权 MCP 客户端</title>
+  <style>
+    :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f3f5f8}*{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px}.card{width:min(100%,500px);background:#fff;border:1px solid #e2e7ef;border-radius:18px;padding:32px;box-shadow:0 18px 55px #1e293b12}h1{font-size:23px;margin:0 0 10px}.muted{color:#65728a;line-height:1.65}.details{background:#f6f8fb;border-radius:10px;padding:14px 16px;margin:20px 0;font-size:13px;line-height:1.8;overflow-wrap:anywhere}.buttons{display:flex;gap:10px}.buttons button{flex:1;border:0;border-radius:9px;padding:12px;font:inherit;font-weight:700;cursor:pointer}.approve{background:#3157d5;color:#fff}.deny{background:#eef1f6;color:#29344a}input[type=hidden]{display:none}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>授权 MCP 客户端</h1>
+    <p class="muted"><strong>{{.ClientName}}</strong> 请求连接 SSH Hub，并使用你配置的 SSH 主机执行命令。请只授权你信任的客户端。</p>
+    <div class="details">
+      <div><strong>客户端 ID：</strong>{{.ClientID}}</div>
+      <div><strong>权限：</strong>{{.Scope}}</div>
+      <div><strong>资源：</strong>{{.Resource}}</div>
+      <div><strong>回调地址：</strong>{{.RedirectURI}}</div>
+    </div>
+    <form method="post" action="/oauth/authorize">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="client_id" value="{{.ClientID}}">
+      <input type="hidden" name="response_type" value="code">
+      <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
+      <input type="hidden" name="state" value="{{.State}}">
+      <input type="hidden" name="code_challenge" value="{{.Challenge}}">
+      <input type="hidden" name="code_challenge_method" value="S256">
+      <input type="hidden" name="scope" value="{{.Scope}}">
+      <input type="hidden" name="resource" value="{{.Resource}}">
+      <div class="buttons">
+        <button class="deny" name="decision" value="deny">拒绝</button>
+        <button class="approve" name="decision" value="approve">授权并继续</button>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

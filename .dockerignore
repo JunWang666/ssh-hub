@@ -1,0 +1,6 @@
+.git
+.agents
+.aws
+.codex
+data
+*.log

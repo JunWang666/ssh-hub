@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRF}}">
+  <title>SSH Hub</title>
+  <style>
+    :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182235;background:#f4f6fa;font-synthesis:none}*{box-sizing:border-box}body{margin:0}header{height:68px;background:#fff;border-bottom:1px solid #e4e8ef;display:flex;align-items:center;justify-content:space-between;padding:0 max(24px,calc((100vw - 1160px)/2))}.brand{display:flex;align-items:center;gap:11px;font-weight:750;letter-spacing:-.02em}.mark{width:34px;height:34px;border-radius:10px;background:#3157d5;color:white;display:grid;place-items:center;font-family:monospace;font-size:18px}.header-right{display:flex;align-items:center;gap:16px;color:#6c778b;font-size:13px}button{font:inherit;cursor:pointer}.logout{border:1px solid #dbe1eb;background:#fff;border-radius:8px;padding:8px 12px;color:#29344a}.wrap{max-width:1160px;margin:32px auto;padding:0 24px}.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:24px}.intro h1{font-size:27px;letter-spacing:-.03em;margin:0 0 7px}.intro p{margin:0;color:#68758b;font-size:14px}.pill{background:#eaf0ff;border:1px solid #dce6ff;color:#3456b4;padding:8px 12px;border-radius:999px;font:12px ui-monospace,monospace;white-space:nowrap}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:#fff;border:1px solid #e3e8f0;border-radius:14px;padding:21px;box-shadow:0 2px 9px #20304a06}.wide{grid-column:1/-1}.card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px}.card h2{font-size:16px;margin:0}.count{font-size:12px;color:#7c8799;background:#f2f4f8;border-radius:999px;padding:4px 9px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{min-width:0}.field.full{grid-column:1/-1}label{display:block;color:#546176;font-size:12px;font-weight:650;margin:0 0 6px}input,select,textarea{width:100%;border:1px solid #d6deea;border-radius:8px;background:#fff;color:#182235;padding:10px 11px;font:13px inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:#6f8be5;box-shadow:0 0 0 3px #3157d51a}textarea{resize:vertical;min-height:100px;font:12px ui-monospace,monospace}.hint{font-size:11px;line-height:1.5;color:#8a95a7;margin-top:5px}.primary{border:0;background:#3157d5;color:white;border-radius:8px;padding:10px 14px;font-size:13px;font-weight:700}.secondary{border:1px solid #d9e0ea;background:#fff;color:#4a566b;border-radius:8px;padding:8px 11px;font-size:12px}.actions{display:flex;justify-content:flex-end;margin-top:14px}.list{display:flex;flex-direction:column}.empty{color:#8792a4;font-size:13px;padding:16px 0}.row{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid #edf0f4;padding:13px 0}.row:first-child{border-top:0;padding-top:0}.row-main{min-width:0}.row-title{font-size:13px;font-weight:700;overflow-wrap:anywhere}.row-sub{font-size:11px;color:#7b879a;margin-top:5px;overflow-wrap:anywhere}.row button{flex:none}.tag{display:inline-block;background:#f2f4f8;border-radius:5px;padding:3px 6px;color:#647188;font-size:10px;margin-left:5px}.notice{display:none;border-radius:9px;padding:11px 14px;margin-bottom:16px;font-size:13px}.notice.show{display:block}.notice.ok{background:#eaf7ef;color:#27623b}.notice.err{background:#fff0ef;color:#a52a24}.oauth{display:grid;grid-template-columns:1fr auto;align-items:center;gap:16px}.oauth code{display:block;font-size:12px;color:#3157d5;overflow-wrap:anywhere;margin-top:7px}.oauth p{font-size:12px;line-height:1.6;color:#748095;margin:0}.danger{color:#a52a24;border-color:#f0d3d0}.mono{font-family:ui-monospace,SFMono-Regular,monospace}@media(max-width:760px){header{padding:0 18px}.header-right>span{display:none}.wrap{margin:23px auto;padding:0 15px}.intro{display:block}.pill{display:inline-block;margin-top:15px}.grid{grid-template-columns:1fr}.wide{grid-column:auto}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.oauth{grid-template-columns:1fr}.intro h1{font-size:24px}}
+  </style>
+</head>
+<body data-csrf="{{.CSRF}}" data-mcp="{{.MCPURL}}" data-public="{{.PublicURL}}">
+  <header>
+    <div class="brand"><div class="mark">&gt;_</div><span>SSH Hub</span></div>
+    <div class="header-right"><span>管理员会话</span><form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="logout" type="submit">退出登录</button></form></div>
+  </header>
+  <main class="wrap">
+    <div class="intro"><div><h1>远程 SSH 控制台</h1><p>管理 SSH 凭据，并通过 MCP 安全地连接远程主机。</p></div><div class="pill" id="mcp-url"></div></div>
+    <div id="notice" class="notice"></div>
+    <div class="grid">
+      <section class="card">
+        <div class="card-head"><h2>SSH 密钥</h2><span class="count" id="key-count">0</span></div>
+        <form id="key-form">
+          <div class="form-grid">
+            <div class="field full"><label for="key-name">密钥名称</label><input id="key-name" name="name" placeholder="production-ed25519" maxlength="80" required></div>
+            <div class="field full"><label for="key-private">私钥内容</label><textarea id="key-private" name="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" autocomplete="off" required></textarea><div class="hint">私钥只会在提交时传输，并使用本机生成的 AES-256-GCM 密钥加密保存。</div></div>
+            <div class="field full"><label for="key-passphrase">私钥口令（如有）</label><input id="key-passphrase" name="passphrase" type="password" autocomplete="new-password"></div>
+          </div>
+          <div class="actions"><button class="primary" type="submit">保存密钥</button></div>
+        </form>
+        <div class="list" id="keys-list"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>SSH 主机</h2><span class="count" id="host-count">0</span></div>
+        <form id="host-form">
+          <div class="form-grid">
+            <div class="field"><label for="host-name">显示名称</label><input id="host-name" name="name" placeholder="生产环境" maxlength="80" required></div>
+            <div class="field"><label for="host-address">地址</label><input id="host-address" name="address" placeholder="server.example.com:22" required></div>
+            <div class="field"><label for="host-user">SSH 用户名</label><input id="host-user" name="username" placeholder="ubuntu" autocomplete="off" required></div>
+            <div class="field"><label for="host-key">SSH 密钥</label><select id="host-key" name="keyID" required><option value="">先添加密钥</option></select></div>
+            <div class="field full"><label for="host-fingerprint">服务器主机指纹</label><input id="host-fingerprint" name="hostKeyFingerprint" placeholder="SHA256:..." required><div class="hint">在服务器上运行 <span class="mono">ssh-keyscan -t ed25519 主机 | ssh-keygen -lf -</span> 获取。必须匹配该指纹才会建立连接。</div></div>
+            <div class="field"><label for="host-timeout">命令超时（秒）</label><input id="host-timeout" name="timeoutSeconds" type="number" min="1" max="300" value="30"></div>
+          </div>
+          <div class="actions"><button class="primary" type="submit">添加主机</button></div>
+        </form>
+        <div class="list" id="hosts-list"></div>
+      </section>
+      <section class="card wide">
+        <div class="card-head"><h2>OAuth 客户端</h2><span class="count" id="client-count">0</span></div>
+        <div class="list" id="clients-list"></div>
+      </section>
+      <section class="card wide">
+        <div class="card-head"><h2>连接信息</h2></div>
+        <div class="oauth"><div><strong style="font-size:13px">MCP Streamable HTTP</strong><code id="mcp-endpoint"></code><p>在 MCP 客户端添加以上地址。首次连接时，客户端会打开浏览器登录并请求授权。</p></div><button class="secondary" id="copy-mcp" type="button">复制地址</button></div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const csrf = document.body.dataset.csrf;
+    const mcpURL = document.body.dataset.mcp;
+    document.getElementById('mcp-url').textContent = mcpURL;
+    document.getElementById('mcp-endpoint').textContent = mcpURL;
+    const notice = document.getElementById('notice');
+    function showNotice(message, error=false) { notice.textContent=message; notice.className='notice show '+(error?'err':'ok'); window.scrollTo({top:0,behavior:'smooth'}); setTimeout(()=>notice.className='notice',5000); }
+    async function api(path, options={}) {
+      const headers = new Headers(options.headers || {});
+      headers.set('X-CSRF-Token', csrf);
+      if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type','application/json');
+      const response = await fetch(path,{...options,headers,credentials:'same-origin'});
+      if (response.status===401) { location.href='/login'; throw new Error('登录已过期，请重新登录。'); }
+      const result = response.status===204 ? null : await response.json().catch(()=>null);
+      if (!response.ok) throw new Error(result?.error || `请求失败 (${response.status})`);
+      return result;
+    }
+    function esc(value='') { return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function empty(text) { return `<div class="empty">${esc(text)}</div>`; }
+    async function load() {
+      const data=await api('/api/overview');
+      document.getElementById('key-count').textContent=data.keys.length;
+      document.getElementById('host-count').textContent=data.hosts.length;
+      document.getElementById('client-count').textContent=data.clients.length;
+      document.getElementById('keys-list').innerHTML=data.keys.length?data.keys.map(key=>`<div class="row"><div class="row-main"><div class="row-title">${esc(key.name)}</div><div class="row-sub">添加于 ${new Date(key.createdAt).toLocaleString()}</div></div><button class="secondary danger" onclick="removeKey('${esc(key.id)}')">删除</button></div>`).join(''):empty('还没有保存 SSH 密钥。');
+      document.getElementById('host-key').innerHTML=data.keys.length?'<option value="">选择密钥</option>'+data.keys.map(key=>`<option value="${esc(key.id)}">${esc(key.name)}</option>`).join(''):'<option value="">先添加密钥</option>';
+      document.getElementById('hosts-list').innerHTML=data.hosts.length?data.hosts.map(host=>`<div class="row"><div class="row-main"><div class="row-title">${esc(host.name)}</div><div class="row-sub"><span class="mono">${esc(host.username)}@${esc(host.address)}</span><span class="tag">密钥 ${esc(host.keyName)}</span><br>指纹 ${esc(host.hostKeyFingerprint)}</div></div><button class="secondary danger" onclick="removeHost('${esc(host.id)}')">删除</button></div>`).join(''):empty('还没有配置 SSH 主机。');
+      document.getElementById('clients-list').innerHTML=data.clients.length?data.clients.map(client=>`<div class="row"><div class="row-main"><div class="row-title">${esc(client.name)}</div><div class="row-sub mono">${esc(client.id)} · 注册于 ${new Date(client.createdAt).toLocaleString()}<br>回调：${client.redirectURIs.map(esc).join(', ')}</div></div><button class="secondary danger" onclick="removeClient('${esc(client.id)}')">撤销</button></div>`).join(''):empty('客户端完成动态注册后会显示在这里。');
+    }
+    async function removeKey(id) { if(!confirm('删除此密钥？正在使用该密钥的主机需要先删除。'))return; try{await api('/api/keys/'+encodeURIComponent(id),{method:'DELETE'});await load();showNotice('密钥已删除。')}catch(error){showNotice(error.message,true)} }
+    async function removeHost(id) { if(!confirm('删除此 SSH 主机配置？'))return; try{await api('/api/hosts/'+encodeURIComponent(id),{method:'DELETE'});await load();showNotice('主机已删除。')}catch(error){showNotice(error.message,true)} }
+    async function removeClient(id) { if(!confirm('撤销此客户端及其现有令牌？'))return; try{await api('/api/clients/'+encodeURIComponent(id),{method:'DELETE'});await load();showNotice('客户端已撤销。')}catch(error){showNotice(error.message,true)} }
+    document.getElementById('key-form').addEventListener('submit',async event=>{event.preventDefault();const form=new FormData(event.currentTarget);try{await api('/api/keys',{method:'POST',body:JSON.stringify({name:form.get('name'),privateKey:form.get('privateKey'),passphrase:form.get('passphrase')})});event.currentTarget.reset();await load();showNotice('SSH 密钥已加密保存。')}catch(error){showNotice(error.message,true)}});
+    document.getElementById('host-form').addEventListener('submit',async event=>{event.preventDefault();const form=new FormData(event.currentTarget);try{await api('/api/hosts',{method:'POST',body:JSON.stringify({name:form.get('name'),address:form.get('address'),username:form.get('username'),keyID:form.get('keyID'),hostKeyFingerprint:form.get('hostKeyFingerprint'),timeoutSeconds:Number(form.get('timeoutSeconds'))})});event.currentTarget.reset();document.getElementById('host-timeout').value='30';await load();showNotice('SSH 主机已添加。')}catch(error){showNotice(error.message,true)}});
+    document.getElementById('copy-mcp').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(mcpURL);showNotice('MCP 地址已复制。')}catch(_){showNotice(mcpURL)}});
+    load().catch(error=>showNotice(error.message,true));
+  </script>
+</body>
+</html>

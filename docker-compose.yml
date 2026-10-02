@@ -1,0 +1,24 @@
+services:
+  ssh-hub:
+    build: .
+    image: ssh-hub:local
+    restart: unless-stopped
+    ports:
+      - "${SSHHUB_PORT:-8080}:8080"
+    environment:
+      SSHHUB_LISTEN_ADDR: ":8080"
+      SSHHUB_DATA_DIR: /data
+      SSHHUB_PUBLIC_URL: ${SSHHUB_PUBLIC_URL:-http://localhost:8080}
+      SSHHUB_ADMIN_PASSWORD: ${SSHHUB_ADMIN_PASSWORD:-}
+      SSHHUB_OIDC_ISSUER: ${SSHHUB_OIDC_ISSUER:-}
+      SSHHUB_OIDC_CLIENT_ID: ${SSHHUB_OIDC_CLIENT_ID:-}
+      SSHHUB_OIDC_CLIENT_SECRET: ${SSHHUB_OIDC_CLIENT_SECRET:-}
+      SSHHUB_OIDC_ALLOWED_EMAILS: ${SSHHUB_OIDC_ALLOWED_EMAILS:-}
+      SSHHUB_OIDC_ALLOWED_SUBJECTS: ${SSHHUB_OIDC_ALLOWED_SUBJECTS:-}
+      SSHHUB_OIDC_LABEL: ${SSHHUB_OIDC_LABEL:-}
+    volumes:
+      - ssh-hub-data:/data
+    init: true
+
+volumes:
+  ssh-hub-data:

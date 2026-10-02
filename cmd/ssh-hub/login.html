@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSH Hub 登录</title>
+  <style>
+    :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f3f5f8}*{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px}.card{width:min(100%,420px);background:#fff;border:1px solid #e2e7ef;border-radius:18px;padding:32px;box-shadow:0 18px 55px #1e293b12}h1{font-size:24px;margin:0 0 8px}.muted{color:#65728a;font-size:14px;line-height:1.6;margin:0 0 24px}label{display:block;font-size:13px;font-weight:650;margin:16px 0 7px}input{width:100%;border:1px solid #cfd7e4;border-radius:9px;padding:12px;font:inherit}button,.oidc{width:100%;margin-top:22px;border:0;border-radius:9px;padding:12px;background:#3157d5;color:white;font:inherit;font-weight:700;cursor:pointer}.oidc{display:block;text-align:center;text-decoration:none;background:#fff;color:#26344e;border:1px solid #cfd7e4}.divider{text-align:center;color:#8792a5;font-size:12px;margin-top:20px}.error{background:#fff0ef;color:#a52a24;border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:16px}.hint{font-size:12px;color:#718096;margin-top:8px}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>{{if .Setup}}初始化 SSH Hub{{else}}登录 SSH Hub{{end}}</h1>
+    <p class="muted">{{if .Setup}}输入容器日志中的一次性初始化口令，并设置管理员密码。{{else}}使用管理员密码管理 SSH 主机、密钥和 MCP 授权客户端。{{end}}</p>
+    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{{.Next}}">
+      {{if .Setup}}
+      <label for="setup_token">一次性初始化口令</label>
+      <input id="setup_token" name="setup_token" type="password" autocomplete="one-time-code" required autofocus>
+      <label for="password">设置管理员密码</label>
+      <input id="password" name="password" type="password" minlength="12" autocomplete="new-password" required>
+      <div class="hint">至少 12 个字符；密码哈希保存在本地数据目录中。</div>
+      <label for="password_confirm">再次输入密码</label>
+      <input id="password_confirm" name="password_confirm" type="password" minlength="12" autocomplete="new-password" required>
+      {{else}}
+      <label for="password">管理员密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      {{end}}
+      <button type="submit">{{if .Setup}}完成初始化{{else}}登录{{end}}</button>
+    </form>
+    {{if .OIDCEnabled}}
+    <div class="divider">或</div>
+    <a class="oidc" href="/auth/oidc?next={{urlquery .Next}}">{{.OIDCLabel}}</a>
+    {{end}}
+  </main>
+</body>
+</html>
