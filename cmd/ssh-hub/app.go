@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"html/template"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -340,6 +341,7 @@ func (a *App) checkCSRF(w http.ResponseWriter, r *http.Request) (Session, bool) 
 	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		if !a.validSameOrigin(origin, r.Host) {
+			log.Printf("CSRF Origin rejected: method=%s path=%q host=%q origin=%q", r.Method, r.URL.Path, r.Host, origin)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin check failed"})
 			return Session{}, false
 		}
