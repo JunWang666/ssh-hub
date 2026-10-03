@@ -282,6 +282,7 @@ func (a *App) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) renderConsent(w http.ResponseWriter, client OAuthClient, code AuthCode, stateValue, csrf string) {
 	page := template.Must(template.ParseFS(webFiles, "consent.html"))
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = page.Execute(w, map[string]string{
 		"ClientName": client.Name, "ClientID": client.ID,

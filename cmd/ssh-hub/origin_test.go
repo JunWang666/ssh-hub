@@ -19,6 +19,7 @@ func TestValidSameOriginNormalizesAuthority(t *testing.T) {
 		{name: "case-insensitive public host", origin: "https://SSHHUB.EXAMPLE.TEST", requestHost: "sshhub.example.test:443", want: true},
 		{name: "separate admin origin", origin: "https://sshadmin.example.test", requestHost: "SSHADMIN.example.test:443", want: true},
 		{name: "untrusted origin", origin: "https://chatgpt.com", requestHost: "sshhub.example.test", want: false},
+		{name: "opaque origin remains rejected", origin: "null", requestHost: "sshhub.example.test", want: false},
 		{name: "different configured host", origin: "https://sshhub.example.test", requestHost: "sshadmin.example.test", want: false},
 		{name: "non-default port", origin: "https://sshhub.example.test:444", requestHost: "sshhub.example.test", want: false},
 		{name: "origin path", origin: "https://sshhub.example.test/path", requestHost: "sshhub.example.test", want: false},
