@@ -28,7 +28,7 @@ func main() {
 			fmt.Println("Usage: ssh-hub [serve] | login --url URL [--profile NAME] [--force] | mcp --url URL [--profile NAME]")
 			return
 		case "--version":
-			fmt.Println("ssh-hub 0.2.0")
+			fmt.Println("ssh-hub 0.3.0")
 			return
 		case "serve":
 		default:
@@ -51,6 +51,11 @@ func main() {
 		log.Fatalf("migrate client permissions: %v", err)
 	}
 	app := newApp(store, publicURL)
+	idleTimeout, err := time.ParseDuration(envOr("SSHHUB_SESSION_IDLE_TIMEOUT", "24h"))
+	if err != nil || idleTimeout < 0 {
+		log.Fatal("SSHHUB_SESSION_IDLE_TIMEOUT must be a non-negative duration")
+	}
+	app.sessionIdleTimeout = idleTimeout
 	app.keysDir = envOr("SSHHUB_KEYS_DIR", "/keys")
 	if err := app.recoverAuditSessions(); err != nil {
 		log.Fatalf("recover audit sessions: %v", err)
@@ -76,6 +81,10 @@ func main() {
 		log.Printf("First run: open %s/login and enter this one-time setup token: %s", setupURL, token)
 	}
 
+	monitorCtx, stopMonitor := context.WithCancel(context.Background())
+	defer stopMonitor()
+	go app.monitor(monitorCtx)
+
 	addr := envOr("SSHHUB_LISTEN_ADDR", ":8080")
 	server := &http.Server{
 		Addr:              addr,
@@ -89,6 +98,7 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-stop
+		stopMonitor()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = server.Shutdown(ctx)

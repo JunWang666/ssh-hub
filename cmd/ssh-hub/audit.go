@@ -46,6 +46,8 @@ func clientAllowsHost(client OAuthClient, hostID string) bool {
 }
 
 type AuditSession struct {
+	Operation      string    `json:"operation,omitempty"`
+	ConnectionID   string    `json:"connectionId,omitempty"`
 	ID             string    `json:"id"`
 	ClientID       string    `json:"clientId"`
 	ClientName     string    `json:"clientName"`
@@ -184,6 +186,26 @@ func (a *App) resolveExecution(clientID, hostID string) (OAuthClient, Host, Stor
 }
 
 func (a *App) submitExecution(ctx context.Context, hostID, command string, timeout int) (AuditSession, error) {
+	return a.submitOperation(ctx, hostID, command, timeout, "exec", "")
+}
+
+func (a *App) submitOperation(ctx context.Context, hostID, command string, timeout int, operation, connectionID string) (AuditSession, error) {
+	if operation == "open" {
+		var err error
+		connectionID, err = randomToken(24)
+		if err != nil {
+			return AuditSession{}, err
+		}
+	}
+	if connectionID != "" && operation != "open" {
+		p, err := a.connection(clientIDFromContext(ctx), connectionID)
+		if err != nil {
+			return AuditSession{}, err
+		}
+		if p.snapshot().HostID != hostID {
+			return AuditSession{}, errors.New("session belongs to another host")
+		}
+	}
 	if timeout < 0 || timeout > 300 {
 		return AuditSession{}, errors.New("timeout_seconds must be between 1 and 300 when specified")
 	}
@@ -192,7 +214,7 @@ func (a *App) submitExecution(ctx context.Context, hostID, command string, timeo
 		return AuditSession{}, err
 	}
 	now := time.Now().UTC()
-	record := AuditSession{ID: now.Format("20060102T150405") + "_" + id, ClientID: clientIDFromContext(ctx), HostID: hostID, Command: command, TimeoutSeconds: timeout, CreatedAt: now, ExitCode: -1}
+	record := AuditSession{Operation: operation, ConnectionID: connectionID, ID: now.Format("20060102T150405") + "_" + id, ClientID: clientIDFromContext(ctx), HostID: hostID, Command: command, TimeoutSeconds: timeout, CreatedAt: now, ExitCode: -1}
 	client, host, _, accessErr := a.resolveExecution(record.ClientID, hostID)
 	record.ClientName = client.Name
 	if accessErr != nil {
@@ -224,7 +246,15 @@ func (a *App) executeAudited(ctx context.Context, record AuditSession) AuditSess
 		err = errors.New("host configuration changed; submit a new request")
 	}
 	if err == nil {
-		record.Output, record.ExitCode, err = a.runSSHCommand(ctx, host, key, record.Command, record.TimeoutSeconds, &record)
+		switch {
+		case record.Operation == "open":
+			err = a.openPersistent(ctx, host, key, &record)
+			record.ExitCode = 0
+		case record.ConnectionID != "":
+			record.Output, record.ExitCode, err = a.runPersistent(ctx, host, &record)
+		default:
+			record.Output, record.ExitCode, err = a.runSSHCommand(ctx, host, key, record.Command, record.TimeoutSeconds, &record)
+		}
 	}
 	record.FinishedAt = time.Now().UTC()
 	record.Status = "completed"
@@ -240,6 +270,11 @@ func (a *App) executeAudited(ctx context.Context, record AuditSession) AuditSess
 	saveErr := a.saveAuditLocked(record)
 	a.auditMu.Unlock()
 	if saveErr != nil {
+		if record.ConnectionID != "" {
+			if p, e := a.connection(record.ClientID, record.ConnectionID); e == nil && p.snapshot().Status != "connecting" {
+				p.close("audit completion persistence failed")
+			}
+		}
 		log.Printf("audit completion write failed for session %s: %v", record.ID, saveErr)
 		record.Status, record.Error = "failed", "Execution finished but audit persistence failed; inspect server storage before retrying"
 	}
@@ -248,13 +283,16 @@ func (a *App) executeAudited(ctx context.Context, record AuditSession) AuditSess
 
 func auditToolResult(record AuditSession) map[string]any {
 	text := fmt.Sprintf("session_id: %s\nstatus: %s\nexit_code: %d\n%s", record.ID, record.Status, record.ExitCode, record.Output)
+	if record.ConnectionID != "" {
+		text += "\nconnection_id: " + record.ConnectionID
+	}
 	if record.Status == "pending" {
 		text += "\nAdministrator approval is required in SSH Hub. No SSH connection has been made. Poll ssh_session_status with this session_id; do not resubmit the command."
 	}
 	if record.Error != "" {
 		text += "\n" + record.Error
 	}
-	return map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "structuredContent": map[string]any{"session_id": record.ID, "status": record.Status, "exit_code": record.ExitCode, "output": record.Output, "stdout": record.Stdout, "stderr": record.Stderr, "error": record.Error}, "isError": record.Status != "completed" && record.Status != "pending" && record.Status != "running"}
+	return map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "structuredContent": map[string]any{"connection_id": record.ConnectionID, "operation": record.Operation, "session_id": record.ID, "status": record.Status, "exit_code": record.ExitCode, "output": record.Output, "stdout": record.Stdout, "stderr": record.Stderr, "error": record.Error}, "isError": record.Status != "completed" && record.Status != "pending" && record.Status != "running"}
 }
 
 func (a *App) clientAudit(ctx context.Context, id string) (AuditSession, error) {
@@ -298,6 +336,7 @@ func (a *App) handleClientPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
+	a.enforceConnectionPolicies()
 	w.WriteHeader(204)
 }
 

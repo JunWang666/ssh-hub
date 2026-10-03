@@ -156,3 +156,33 @@ SSHHUB_TEST_CHROMIUM=/usr/bin/chromium go test -mod=vendor ./cmd/ssh-hub -run Te
 集成测试会启动本地临时 SSH/HTTP 服务器，不使用生产凭据或远程主机。
 
 OAuth 授权、设备码申请、令牌兑换和刷新均可省略 `resource` 参数；首次授权默认绑定本服务 `/mcp`，兑换和刷新继承原授权的资源。显式传入的资源仍需匹配，访问令牌的资源校验保持启用。
+
+## 持久 shell、存活探测和 MCP 审计
+
+管理台按服务器、持久会话、待审批、审计、密钥和客户端权限分栏；新增、安装公钥及权限配置通过按钮打开弹窗。
+
+Agent 使用流程：
+
+1. `ssh_open_session({"host_id":"..."})` 请求打开一个持久 shell。需要审批时返回 `session_id`，用 `ssh_session_status` 等待批准及连接完成。
+2. 成功结果包含 `connection_id`，随后调用 `ssh_exec({"host_id":"...","connection_id":"...","command":"cd /srv; export APP_ENV=production"})`。
+3. 后续 `ssh_exec` 使用同一个 `connection_id`，保留目录、shell 变量、环境变量和后台任务。每条命令仍独立审批、审计，同一会话同时只执行一条命令。
+4. `ssh_list_sessions` 列出自己的会话，`ssh_check_session` 立即探测现有连接，`ssh_close_session` 关闭会话。
+5. `ssh_audit_list` 分页读取自己的审计概要（每页 50 条，传回 `next_before` 作为 `before`）；可按 `connection_id`、`status` 过滤。`ssh_audit_read({"session_id":"..."})` 读取完整命令、审批、输出和退出码。
+6. `ssh_read_session({"connection_id":"...","offset":0})` 分页读取包含后台输出的持久化会话记录；后续使用返回的 `next_offset`。`entries` 为带时间、输出流和内容的记录。会话关闭或服务重启后仍可读取，客户端只能读取自己的记录。
+
+持久 shell 是非交互式 POSIX `sh`，不分配 PTY；需要输入密码、交互程序或全屏终端的命令不适用。`exit`、`exec` 替换 shell、永久重定向 stdout/stderr、`set -e` 导致 shell 退出等操作可能中断会话。后台输出持续写入记录，可能同时出现在下一条执行的输出中。命令超时/取消将关闭整个会话，避免命令继续执行时误接收下一条命令；远程后台任务是否终止取决于其信号处理，不能保证已经停止。
+
+会话跨 MCP 请求保持，但**不跨 SSH 断线或 SSH Hub 容器重启**；不会自动重连或重放命令。现有 SSH 连接每 30 秒发送 keepalive，5 秒未收到响应则关闭。默认空闲 24 小时关闭，可用 `SSHHUB_SESSION_IDLE_TIMEOUT=2h` 修改，`0` 禁用空闲关闭；后台输出不重置命令空闲计时。权限撤销、删除机器会关闭对应会话。最多保留 128 个活动会话。每会话 transcript 最多 16 MiB，达到上限会关闭会话；单条命令 stdout/stderr 各最多保存 512 KiB。记录存放于 `/data/audit` 和 `/data/transcripts`，文件权限 `0600`，不自动清理。
+
+主机每 60 秒自动检查 SSH 握手和已确认的指纹，不使用私钥登录。状态包括 `online`、`offline`、`fingerprint_changed`；`online` 不代表 SSH 用户认证必定成功。首次探测前及服务重启后状态为未知。手动接口仅在管理域名提供，要求管理员登录；POST/DELETE 同时要求 `X-CSRF-Token`：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/hosts/health` | 读取全部主机最近探测结果 |
+| `POST /api/hosts/health` | 立即探测全部主机（并发最多 4） |
+| `GET /api/hosts/{id}/health` | 读取单台主机状态 |
+| `POST /api/hosts/{id}/health` | 立即探测单台主机 |
+| `GET /api/connections` | 列出持久会话 |
+| `POST /api/connections/{id}/check` | 立即探测现有会话，不重连 |
+| `DELETE /api/connections/{id}` | 关闭会话 |
+| `GET /api/connections/{id}/transcript?offset=0` | 分页读取会话输出 |

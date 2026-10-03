@@ -25,24 +25,30 @@ type Session struct {
 }
 
 type App struct {
-	store          *Store
-	publicURL      string
-	adminURL       string
-	keysDir        string
-	auditMu        sync.Mutex
-	secureCookie   bool
-	setup          sync.Mutex
-	setupSecret    string
-	sessionsMu     sync.Mutex
-	sessions       map[string]Session
-	attemptsMu     sync.Mutex
-	attempts       map[string]loginAttempt
-	registrationMu sync.Mutex
-	registrations  map[string]registrationWindow
-	oidcMu         sync.Mutex
-	oidc           *oidcProvider
-	oidcLogins     map[string]oidcLoginState
-	index          *template.Template
+	sessionIdleTimeout time.Duration
+	store              *Store
+	publicURL          string
+	adminURL           string
+	keysDir            string
+	auditMu            sync.Mutex
+	healthMu           sync.Mutex
+	healthRun          sync.Mutex
+	health             map[string]HostHealth
+	connectionsMu      sync.Mutex
+	connections        map[string]*persistentConnection
+	secureCookie       bool
+	setup              sync.Mutex
+	setupSecret        string
+	sessionsMu         sync.Mutex
+	sessions           map[string]Session
+	attemptsMu         sync.Mutex
+	attempts           map[string]loginAttempt
+	registrationMu     sync.Mutex
+	registrations      map[string]registrationWindow
+	oidcMu             sync.Mutex
+	oidc               *oidcProvider
+	oidcLogins         map[string]oidcLoginState
+	index              *template.Template
 }
 
 type loginAttempt struct {
@@ -63,15 +69,18 @@ func newApp(store *Store, publicURL string) *App {
 		panic(err)
 	}
 	return &App{
-		store:         store,
-		publicURL:     publicURL,
-		secureCookie:  strings.HasPrefix(publicURL, "https://"),
-		setupSecret:   token,
-		sessions:      map[string]Session{},
-		attempts:      map[string]loginAttempt{},
-		registrations: map[string]registrationWindow{},
-		oidcLogins:    map[string]oidcLoginState{},
-		index:         t,
+		sessionIdleTimeout: 24 * time.Hour,
+		store:              store,
+		health:             map[string]HostHealth{},
+		connections:        map[string]*persistentConnection{},
+		publicURL:          publicURL,
+		secureCookie:       strings.HasPrefix(publicURL, "https://"),
+		setupSecret:        token,
+		sessions:           map[string]Session{},
+		attempts:           map[string]loginAttempt{},
+		registrations:      map[string]registrationWindow{},
+		oidcLogins:         map[string]oidcLoginState{},
+		index:              t,
 	}
 }
 
@@ -165,6 +174,14 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/keys/{id}", a.handleDeleteKey)
 	mux.HandleFunc("POST /api/hosts", a.handleCreateHost)
 	mux.HandleFunc("POST /api/hosts/probe", a.handleProbeHost)
+	mux.HandleFunc("GET /api/hosts/health", a.handleHostHealth)
+	mux.HandleFunc("POST /api/hosts/health", a.handleHostHealth)
+	mux.HandleFunc("GET /api/hosts/{id}/health", a.handleHostHealth)
+	mux.HandleFunc("POST /api/hosts/{id}/health", a.handleHostHealth)
+	mux.HandleFunc("GET /api/connections", a.handleConnections)
+	mux.HandleFunc("GET /api/connections/{id}/transcript", a.handleTranscript)
+	mux.HandleFunc("POST /api/connections/{id}/check", a.handleConnectionCheck)
+	mux.HandleFunc("DELETE /api/connections/{id}", a.handleConnectionClose)
 	mux.HandleFunc("DELETE /api/hosts/{id}", a.handleDeleteHost)
 	mux.HandleFunc("DELETE /api/clients/{id}", a.handleDeleteClient)
 	mux.HandleFunc("PUT /api/clients/{id}/policy", a.handleClientPolicy)

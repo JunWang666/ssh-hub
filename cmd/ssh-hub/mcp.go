@@ -176,8 +176,8 @@ func (a *App) dispatchMCP(method string, params json.RawMessage, ctx context.Con
 		return map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-			"serverInfo":      map[string]string{"name": "ssh-hub", "version": "0.2.0"},
-			"instructions":    "Use ssh_list_hosts to see permitted hosts. ssh_exec may return a pending approval session; use ssh_session_status to poll it instead of resubmitting the command.",
+			"serverInfo":      map[string]string{"name": "ssh-hub", "version": "0.3.0"},
+			"instructions":    "Use ssh_list_hosts to see permitted hosts. Use ssh_open_session then ssh_exec with connection_id for a persistent shell. ssh_audit_list and ssh_audit_read expose only your audit records. ssh_exec may return a pending approval session; use ssh_session_status to poll it instead of resubmitting the command.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -207,7 +207,7 @@ func supportedProtocolVersion(version string) string {
 }
 
 func toolDefinitions() []map[string]any {
-	return []map[string]any{
+	return append(persistentTools(), []map[string]any{
 		{"name": "ssh_session_status", "description": "Read your SSH session status and recorded output. After admin approval, poll a pending session here; do not resubmit ssh_exec.", "annotations": map[string]any{"readOnlyHint": true}, "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"session_id": map[string]any{"type": "string"}}, "required": []string{"session_id"}, "additionalProperties": false}},
 		{
 			"name":        "ssh_list_hosts",
@@ -218,10 +218,11 @@ func toolDefinitions() []map[string]any {
 		{
 			"name":        "ssh_exec",
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "openWorldHint": true},
-			"description": "Run a shell command on an allowed SSH host. If approval is required, returns a pending session ID without connecting; poll ssh_session_status after administrator approval. Each call is a new execution.",
+			"description": "Run a shell command on an allowed SSH host. If approval is required, returns a pending session ID without connecting; poll ssh_session_status after administrator approval. Supply connection_id from ssh_open_session to preserve shell state across commands; omit it for an independent execution.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"connection_id":   map[string]any{"type": "string", "description": "Optional persistent shell ID from ssh_open_session."},
 					"host_id":         map[string]any{"type": "string", "description": "Host id returned by ssh_list_hosts."},
 					"command":         map[string]any{"type": "string", "description": "Remote shell command to run."},
 					"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 300, "description": "Optional timeout, capped by the host setting."},
@@ -230,7 +231,7 @@ func toolDefinitions() []map[string]any {
 				"additionalProperties": false,
 			},
 		},
-	}
+	}...)
 }
 
 func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonRPCError) {
@@ -278,8 +279,11 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 			return map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": err.Error()}}}, nil
 		}
 		return auditToolResult(record), nil
+	case "ssh_open_session", "ssh_list_sessions", "ssh_check_session", "ssh_close_session", "ssh_audit_list", "ssh_audit_read", "ssh_read_session":
+		return a.callPersistentTool(input.Name, input.Arguments, ctx)
 	case "ssh_exec":
 		var args struct {
+			ConnectionID   string `json:"connection_id"`
 			HostID         string `json:"host_id"`
 			Command        string `json:"command"`
 			TimeoutSeconds int    `json:"timeout_seconds"`
@@ -287,7 +291,7 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 		if err := json.Unmarshal(input.Arguments, &args); err != nil || args.HostID == "" || strings.TrimSpace(args.Command) == "" || len(args.Command) > maxCommandBytes {
 			return nil, &jsonRPCError{Code: -32602, Message: "Invalid params: host_id and command are required; command must be at most 16 KiB"}
 		}
-		record, err := a.submitExecution(ctx, args.HostID, args.Command, args.TimeoutSeconds)
+		record, err := a.submitOperation(ctx, args.HostID, args.Command, args.TimeoutSeconds, "exec", args.ConnectionID)
 		if record.ID != "" {
 			return auditToolResult(record), nil
 		}

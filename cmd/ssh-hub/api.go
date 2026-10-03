@@ -290,6 +290,7 @@ func (a *App) handleDeleteHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
+	a.enforceConnectionPolicies()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -329,6 +330,7 @@ func (a *App) handleDeleteClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
+	a.enforceConnectionPolicies()
 	w.WriteHeader(http.StatusNoContent)
 }
 

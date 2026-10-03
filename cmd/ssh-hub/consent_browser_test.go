@@ -102,10 +102,14 @@ window.confirm=()=>true;
 const pause=()=>new Promise(r=>setTimeout(r,50));
 async function waitFor(fn){for(let n=0;n<100;n++){if(fn())return;await pause()}throw new Error('UI wait timed out')}
 await load();
+if(document.getElementById('key-dialog').open)throw new Error('form should start collapsed');
+document.getElementById('add-key').click();
 document.getElementById('key-name').value='browser-generated';
 document.getElementById('key-form').requestSubmit();
 await waitFor(()=>!document.getElementById('key-install').hidden);
 if(!document.getElementById('install-command').value.includes('/install/'))throw new Error('missing install command');
+closeDialog('install-dialog');
+document.getElementById('add-host').click();
 document.getElementById('host-name').value='browser-host';
 document.getElementById('host-address').value=ADDRESS;
 document.getElementById('host-user').value='tester';
@@ -115,6 +119,11 @@ document.getElementById('host-key').selectedIndex=1;
 document.getElementById('host-form').requestSubmit();
 await waitFor(()=>document.getElementById('hosts-list').textContent.includes('browser-host'));
 await loadAudit();
+showPage('clients');showClientPolicy('c1');
+if(!document.getElementById('policy-dialog').open)throw new Error('missing policy dialog');
+closeDialog('policy-dialog');showPage('hosts');
+const checkButton=document.createElement('button');await checkHost('h1',checkButton);
+if(!document.getElementById('hosts-list').textContent.includes('在线'))throw new Error('missing live health status');
 await fetch('/test-result',{method:'POST',body:'ok'});
 })().catch(async e=>{await fetch('/test-result',{method:'POST',body:String(e)})});
 </script>`
@@ -148,6 +157,9 @@ await fetch('/test-result',{method:'POST',body:'ok'});
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, browser, "--headless", "--no-sandbox", "--disable-gpu", "--no-proxy-server", "--user-data-dir="+t.TempDir(), "--virtual-time-budget=12000", "--dump-dom", server.URL+"/start")
+	if screenshot := os.Getenv("SSHHUB_TEST_SCREENSHOT"); screenshot != "" {
+		cmd.Args = append(cmd.Args, "--window-size=1400,1000", "--screenshot="+screenshot)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("browser: %v %s", err, output)
