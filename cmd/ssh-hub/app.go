@@ -186,6 +186,23 @@ func (a *App) validRequestHost(host string) bool {
 	return hostMatchesOrigin(host, a.publicURL) || hostMatchesOrigin(host, a.adminURL)
 }
 
+func (a *App) validSameOrigin(origin, requestHost string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	for _, configuredOrigin := range []string{a.publicURL, a.adminURL} {
+		configured, err := url.Parse(configuredOrigin)
+		if err != nil || configured.Scheme != parsed.Scheme {
+			continue
+		}
+		if hostMatchesOrigin(parsed.Host, configuredOrigin) && hostMatchesOrigin(requestHost, configuredOrigin) {
+			return true
+		}
+	}
+	return false
+}
+
 func hostMatchesOrigin(host, origin string) bool {
 	if origin == "" {
 		return false
@@ -322,9 +339,7 @@ func (a *App) checkCSRF(w http.ResponseWriter, r *http.Request) (Session, bool) 
 		return Session{}, false
 	}
 	if origin := r.Header.Get("Origin"); origin != "" {
-		parsed, err := url.Parse(origin)
-		public, _ := url.Parse(a.publicURL)
-		if err != nil || parsed.Host != r.Host || parsed.Scheme != public.Scheme {
+		if !a.validSameOrigin(origin, r.Host) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin check failed"})
 			return Session{}, false
 		}

@@ -11,7 +11,6 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -127,12 +126,7 @@ func (a *App) handleMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) validMCPOrigin(origin, requestHost string) bool {
-	parsed, err := url.Parse(origin)
-	public, _ := url.Parse(a.publicURL)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Scheme != public.Scheme || !a.validRequestHost(parsed.Host) || !a.validRequestHost(requestHost) {
-		return false
-	}
-	return strings.EqualFold(parsed.Host, requestHost)
+	return a.validSameOrigin(origin, requestHost)
 }
 
 func (a *App) validBearerToken(header string) (AccessToken, bool) {
