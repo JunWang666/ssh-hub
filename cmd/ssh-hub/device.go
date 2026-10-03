@@ -33,8 +33,8 @@ func (a *App) handleDeviceCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	if r.ParseForm() != nil || !a.resourceIsValid(r.PostForm.Get("resource")) || (r.PostForm.Get("scope") != "" && r.PostForm.Get("scope") != "mcp") {
-		oauthError(w, 400, "invalid_request", "resource and mcp scope are required")
+	if r.ParseForm() != nil || !a.resourceIsValid(a.defaultResource(r.PostForm.Get("resource"))) || (r.PostForm.Get("scope") != "" && r.PostForm.Get("scope") != "mcp") {
+		oauthError(w, 400, "invalid_request", "invalid resource or scope; only mcp scope is supported")
 		return
 	}
 	plain, err := randomToken(32)
@@ -48,7 +48,7 @@ func (a *App) handleDeviceCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw[:])
-	grant := DeviceGrant{ClientID: r.PostForm.Get("client_id"), UserCode: code, Resource: r.PostForm.Get("resource"), ExpiresAt: time.Now().Add(10 * time.Minute), Status: "pending", Interval: 5}
+	grant := DeviceGrant{ClientID: r.PostForm.Get("client_id"), UserCode: code, Resource: a.defaultResource(r.PostForm.Get("resource")), ExpiresAt: time.Now().Add(10 * time.Minute), Status: "pending", Interval: 5}
 	err = a.store.update(func(state *State) error {
 		client, ok := state.Clients[grant.ClientID]
 		if !ok || !client.DeviceEnabled {

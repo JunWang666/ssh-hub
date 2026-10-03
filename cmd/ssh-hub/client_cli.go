@@ -123,7 +123,7 @@ func (c *hubClient) credentials(ctx context.Context, interactive, force bool) (c
 	}
 	if !force && creds.RefreshToken != "" {
 		var result tokenResponse
-		status, err := c.requestJSON(ctx, "/oauth/token", "application/x-www-form-urlencoded", strings.NewReader(url.Values{"grant_type": {"refresh_token"}, "client_id": {creds.ClientID}, "refresh_token": {creds.RefreshToken}, "resource": {c.origin + "/mcp"}}.Encode()), &result)
+		status, err := c.requestJSON(ctx, "/oauth/token", "application/x-www-form-urlencoded", strings.NewReader(url.Values{"grant_type": {"refresh_token"}, "client_id": {creds.ClientID}, "refresh_token": {creds.RefreshToken}}.Encode()), &result)
 		if err != nil {
 			return creds, err
 		}
@@ -174,7 +174,7 @@ func (c *hubClient) deviceLogin(ctx context.Context, creds clientCredentials) (c
 		Error           string `json:"error"`
 	}
 	start := func() (int, error) {
-		return c.requestJSON(ctx, "/oauth/device/code", "application/x-www-form-urlencoded", strings.NewReader(url.Values{"client_id": {creds.ClientID}, "scope": {"mcp"}, "resource": {c.origin + "/mcp"}}.Encode()), &device)
+		return c.requestJSON(ctx, "/oauth/device/code", "application/x-www-form-urlencoded", strings.NewReader(url.Values{"client_id": {creds.ClientID}, "scope": {"mcp"}}.Encode()), &device)
 	}
 	status, err := start()
 	if err == nil && device.Error == "invalid_client" {
@@ -203,7 +203,7 @@ func (c *hubClient) deviceLogin(ctx context.Context, creds clientCredentials) (c
 		case <-timer.C:
 		}
 		var result tokenResponse
-		status, err := c.requestJSON(ctx, "/oauth/token", "application/x-www-form-urlencoded", strings.NewReader(url.Values{"grant_type": {deviceGrantType}, "device_code": {device.DeviceCode}, "client_id": {creds.ClientID}, "resource": {c.origin + "/mcp"}}.Encode()), &result)
+		status, err := c.requestJSON(ctx, "/oauth/token", "application/x-www-form-urlencoded", strings.NewReader(url.Values{"grant_type": {deviceGrantType}, "device_code": {device.DeviceCode}, "client_id": {creds.ClientID}}.Encode()), &result)
 		if err != nil {
 			interval *= 2
 			continue

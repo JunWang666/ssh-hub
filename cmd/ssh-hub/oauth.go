@@ -185,7 +185,7 @@ func (a *App) authorizeValues(values url.Values) (OAuthClient, AuthCode, bool) {
 	redirectURI := values.Get("redirect_uri")
 	challenge := values.Get("code_challenge")
 	method := values.Get("code_challenge_method")
-	resource := values.Get("resource")
+	resource := a.defaultResource(values.Get("resource"))
 	stateValue := values.Get("state")
 	scope := values.Get("scope")
 	if responseType != "code" || clientID == "" || redirectURI == "" || stateValue == "" || method != "S256" || !validPKCEChallenge(challenge) || !a.resourceIsValid(resource) {
@@ -301,6 +301,13 @@ func (a *App) renderConsent(w http.ResponseWriter, client OAuthClient, code Auth
 	})
 }
 
+func (a *App) defaultResource(value string) string {
+	if value == "" {
+		return a.publicURL + "/mcp"
+	}
+	return value
+}
+
 func (a *App) resourceIsValid(value string) bool {
 	return value == a.publicURL+"/mcp" || value == a.publicURL
 }
@@ -337,7 +344,7 @@ func (a *App) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Reques
 	redirectURI := r.PostForm.Get("redirect_uri")
 	verifier := r.PostForm.Get("code_verifier")
 	resource := r.PostForm.Get("resource")
-	if clientID == "" || codeValue == "" || redirectURI == "" || !validPKCEVerifier(verifier) || !a.resourceIsValid(resource) {
+	if clientID == "" || codeValue == "" || redirectURI == "" || !validPKCEVerifier(verifier) || (resource != "" && !a.resourceIsValid(resource)) {
 		oauthError(w, http.StatusBadRequest, "invalid_request", "token request is incomplete")
 		return
 	}
@@ -359,7 +366,7 @@ func (a *App) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Reques
 	err = a.store.update(func(state *State) error {
 		pruneOAuthState(state, now)
 		stored, ok := state.Codes[tokenDigest(codeValue)]
-		if !ok || now.After(stored.ExpiresAt) || stored.ClientID != clientID || stored.RedirectURI != redirectURI || stored.Resource != resource || stored.Challenge != expectedChallenge {
+		if !ok || now.After(stored.ExpiresAt) || stored.ClientID != clientID || stored.RedirectURI != redirectURI || (resource != "" && stored.Resource != resource) || stored.Challenge != expectedChallenge {
 			return nil
 		}
 		if _, ok := state.Clients[clientID]; !ok {
@@ -367,6 +374,7 @@ func (a *App) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Reques
 			return nil
 		}
 		delete(state.Codes, tokenDigest(codeValue))
+		token.Resource = stored.Resource
 		state.Tokens[tokenDigest(plainToken)] = token
 		refreshEnabled = state.Clients[clientID].RefreshEnabled
 		if refreshEnabled {
@@ -405,8 +413,8 @@ func (a *App) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PostForm.Get("client_id")
 	refreshValue := r.PostForm.Get("refresh_token")
 	resource := r.PostForm.Get("resource")
-	if clientID == "" || refreshValue == "" || !a.resourceIsValid(resource) {
-		oauthError(w, http.StatusBadRequest, "invalid_request", "client_id, refresh_token and resource are required")
+	if clientID == "" || refreshValue == "" || (resource != "" && !a.resourceIsValid(resource)) {
+		oauthError(w, http.StatusBadRequest, "invalid_request", "client_id and refresh_token are required; resource must match when supplied")
 		return
 	}
 	plainToken, err := randomToken(32)
@@ -427,7 +435,7 @@ func (a *App) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
 		digest := tokenDigest(refreshValue)
 		stored, ok := state.RefreshTokens[digest]
 		client, clientOK := state.Clients[clientID]
-		if !ok || !clientOK || !client.RefreshEnabled || stored.ClientID != clientID || stored.Resource != resource || now.After(stored.ExpiresAt) {
+		if !ok || !clientOK || !client.RefreshEnabled || stored.ClientID != clientID || (resource != "" && stored.Resource != resource) || now.After(stored.ExpiresAt) {
 			return nil
 		}
 		delete(state.RefreshTokens, digest)

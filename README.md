@@ -154,3 +154,5 @@ SSHHUB_TEST_CHROMIUM=/usr/bin/chromium go test -mod=vendor ./cmd/ssh-hub -run Te
 ```
 
 集成测试会启动本地临时 SSH/HTTP 服务器，不使用生产凭据或远程主机。
+
+OAuth 授权、设备码申请、令牌兑换和刷新均可省略 `resource` 参数；首次授权默认绑定本服务 `/mcp`，兑换和刷新继承原授权的资源。显式传入的资源仍需匹配，访问令牌的资源校验保持启用。

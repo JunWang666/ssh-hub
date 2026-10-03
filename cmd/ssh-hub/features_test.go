@@ -345,7 +345,7 @@ func TestDeviceAuthorizationAndRefresh(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	clientID := registration["client_id"].(string)
-	w = formRequest(a, "/oauth/device/code", url.Values{"client_id": {clientID}, "resource": {a.publicURL + "/mcp"}, "scope": {"mcp"}})
+	w = formRequest(a, "/oauth/device/code", url.Values{"client_id": {clientID}, "scope": {"mcp"}})
 	var device map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &device)
 	if w.Code != 200 {
@@ -353,7 +353,7 @@ func TestDeviceAuthorizationAndRefresh(t *testing.T) {
 	}
 	plain := device["device_code"].(string)
 	code := device["user_code"].(string)
-	poll := url.Values{"grant_type": {deviceGrantType}, "client_id": {clientID}, "device_code": {plain}, "resource": {a.publicURL + "/mcp"}}
+	poll := url.Values{"grant_type": {deviceGrantType}, "client_id": {clientID}, "device_code": {plain}}
 	w = formRequest(a, "/oauth/token", poll)
 	if !strings.Contains(w.Body.String(), "authorization_pending") {
 		t.Fatal(w.Body.String())
@@ -405,7 +405,7 @@ func TestDeviceAuthorizationAndRefresh(t *testing.T) {
 	if w.Code != 400 {
 		t.Fatal("device code replay accepted")
 	}
-	w = formRequest(a, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {tokens.RefreshToken}, "resource": {a.publicURL + "/mcp"}})
+	w = formRequest(a, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {tokens.RefreshToken}})
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
