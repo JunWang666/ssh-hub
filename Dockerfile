@@ -6,6 +6,7 @@ COPY cmd ./cmd
 RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /out/ssh-hub ./cmd/ssh-hub
 
 FROM alpine:3.22
+LABEL org.opencontainers.image.source="https://github.com/JunWang666/ssh-hub"
 RUN addgroup -S -g 10001 sshhub \
     && adduser -S -D -H -u 10001 -G sshhub sshhub \
     && mkdir -p /data \
