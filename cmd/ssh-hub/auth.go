@@ -77,7 +77,11 @@ func (a *App) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) finishLogin(w http.ResponseWriter, r *http.Request, next string) {
-	if _, err := a.createSession(w); err != nil {
+	a.finishLoginAs(w, r, next, "local-admin")
+}
+
+func (a *App) finishLoginAs(w http.ResponseWriter, r *http.Request, next, actor string) {
+	if _, err := a.createSessionForActor(w, actor); err != nil {
 		a.renderLogin(w, loginPageData{Next: next, Error: "无法创建登录会话。"}, http.StatusInternalServerError)
 		return
 	}

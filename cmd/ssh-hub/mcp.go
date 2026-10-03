@@ -57,7 +57,7 @@ func (a *App) handleMCP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	_ = token
+	r = r.WithContext(context.WithValue(r.Context(), clientContextKey{}, token.ClientID))
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -176,8 +176,8 @@ func (a *App) dispatchMCP(method string, params json.RawMessage, ctx context.Con
 		return map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-			"serverInfo":      map[string]string{"name": "ssh-hub", "version": "0.1.0"},
-			"instructions":    "Use ssh_list_hosts to see configured SSH hosts and ssh_exec to run a command on one of them.",
+			"serverInfo":      map[string]string{"name": "ssh-hub", "version": "0.2.0"},
+			"instructions":    "Use ssh_list_hosts to see permitted hosts. ssh_exec may return a pending approval session; use ssh_session_status to poll it instead of resubmitting the command.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -208,14 +208,17 @@ func supportedProtocolVersion(version string) string {
 
 func toolDefinitions() []map[string]any {
 	return []map[string]any{
+		{"name": "ssh_session_status", "description": "Read your SSH session status and recorded output. After admin approval, poll a pending session here; do not resubmit ssh_exec.", "annotations": map[string]any{"readOnlyHint": true}, "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"session_id": map[string]any{"type": "string"}}, "required": []string{"session_id"}, "additionalProperties": false}},
 		{
 			"name":        "ssh_list_hosts",
+			"annotations": map[string]any{"readOnlyHint": true},
 			"description": "List the SSH hosts configured by the administrator.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
 		},
 		{
 			"name":        "ssh_exec",
-			"description": "Run a shell command on a configured SSH host. The command executes with that remote account's permissions.",
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "openWorldHint": true},
+			"description": "Run a shell command on an allowed SSH host. If approval is required, returns a pending session ID without connecting; poll ssh_session_status after administrator approval. Each call is a new execution.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -242,7 +245,14 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 	case "ssh_list_hosts":
 		var hosts []publicHost
 		_ = a.store.view(func(state State) error {
+			client, ok := state.Clients[clientIDFromContext(ctx)]
+			if !ok {
+				return nil
+			}
 			for _, host := range state.Hosts {
+				if !clientAllowsHost(client, host.ID) {
+					continue
+				}
 				hosts = append(hosts, publicHost{
 					ID: host.ID, Name: host.Name, Address: host.Address, Username: host.Username,
 					KeyID: host.KeyID, KeyName: state.Keys[host.KeyID].Name,
@@ -256,6 +266,18 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 			hosts = []publicHost{}
 		}
 		return map[string]any{"content": []map[string]string{{"type": "text", "text": formatHostList(hosts)}}, "structuredContent": map[string]any{"hosts": hosts}}, nil
+	case "ssh_session_status":
+		var args struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal(input.Arguments, &args) != nil || args.SessionID == "" {
+			return nil, &jsonRPCError{Code: -32602, Message: "session_id is required"}
+		}
+		record, err := a.clientAudit(ctx, args.SessionID)
+		if err != nil {
+			return map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": err.Error()}}}, nil
+		}
+		return auditToolResult(record), nil
 	case "ssh_exec":
 		var args struct {
 			HostID         string `json:"host_id"`
@@ -265,24 +287,14 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 		if err := json.Unmarshal(input.Arguments, &args); err != nil || args.HostID == "" || strings.TrimSpace(args.Command) == "" || len(args.Command) > maxCommandBytes {
 			return nil, &jsonRPCError{Code: -32602, Message: "Invalid params: host_id and command are required; command must be at most 16 KiB"}
 		}
-		output, exitCode, err := a.runSSHCommand(ctx, args.HostID, args.Command, args.TimeoutSeconds)
-		if err != nil {
-			text := "SSH command failed: " + err.Error()
-			if output != "" {
-				text += "\n" + output
-			}
-			return map[string]any{
-				"content":           []map[string]string{{"type": "text", "text": text}},
-				"structuredContent": map[string]any{"exit_code": exitCode, "output": output},
-				"isError":           true,
-			}, nil
+		record, err := a.submitExecution(ctx, args.HostID, args.Command, args.TimeoutSeconds)
+		if record.ID != "" {
+			return auditToolResult(record), nil
 		}
-		text := fmt.Sprintf("exit_code: %d\n%s", exitCode, output)
-		result := map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "structuredContent": map[string]any{"exit_code": exitCode, "output": output}}
-		if exitCode != 0 {
-			result["isError"] = true
+		if err == nil {
+			err = errors.New("execution could not be created")
 		}
-		return result, nil
+		return map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": err.Error()}}}, nil
 	default:
 		return nil, &jsonRPCError{Code: -32602, Message: "Unknown tool"}
 	}
@@ -290,7 +302,7 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 
 func formatHostList(hosts []publicHost) string {
 	if len(hosts) == 0 {
-		return "No SSH hosts are configured. Add a host in the SSH Hub web UI."
+		return "No SSH hosts are available to this client. Ask the administrator to grant host access in the SSH Hub web UI."
 	}
 	var builder strings.Builder
 	for _, host := range hosts {
@@ -338,36 +350,12 @@ type keyMaterial struct {
 	Passphrase string `json:"passphrase"`
 }
 
-func (a *App) runSSHCommand(parent context.Context, hostID, command string, requestedTimeout int) (string, int, error) {
-	var host Host
-	var key StoredKey
-	err := a.store.view(func(state State) error {
-		var ok bool
-		host, ok = state.Hosts[hostID]
-		if !ok {
-			return errors.New("configured host was not found")
-		}
-		key, ok = state.Keys[host.KeyID]
-		if !ok {
-			return errors.New("SSH key for this host was not found")
-		}
-		return nil
-	})
+func (a *App) runSSHCommand(parent context.Context, host Host, key StoredKey, command string, requestedTimeout int, record *AuditSession) (string, int, error) {
+	signer, err := a.keySigner(key)
 	if err != nil {
-		return "", 0, err
+		return "", 0, errors.New("could not load the configured SSH key: " + err.Error())
 	}
-	secret, err := a.store.decryptSecret(key.Secret)
-	if err != nil {
-		return "", 0, errors.New("could not decrypt the configured SSH key")
-	}
-	var material keyMaterial
-	if err := json.Unmarshal(secret, &material); err != nil {
-		return "", 0, errors.New("configured SSH key record is invalid")
-	}
-	signer, err := parsePrivateKey(material.PrivateKey, material.Passphrase)
-	if err != nil {
-		return "", 0, errors.New("could not parse the configured SSH key")
-	}
+
 	timeout := host.TimeoutSeconds
 	if requestedTimeout > 0 && requestedTimeout < timeout {
 		timeout = requestedTimeout
@@ -381,6 +369,8 @@ func (a *App) runSSHCommand(parent context.Context, hostID, command string, requ
 	if err != nil {
 		return "", 0, fmt.Errorf("connect to %s: %w", host.Address, err)
 	}
+	stopClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopClose()
 	deadline, hasDeadline := ctx.Deadline()
 	if hasDeadline {
 		_ = connection.SetDeadline(deadline)
@@ -416,15 +406,34 @@ func (a *App) runSSHCommand(parent context.Context, hostID, command string, requ
 	stderr := &outputBuffer{limit: maxCommandOutput}
 	session.Stdout = stdout
 	session.Stderr = stderr
+	defer func() { record.Stdout = stdout.String(); record.Stderr = stderr.String() }()
 	done := make(chan error, 1)
 	go func() { done <- session.Run(command) }()
 	var runErr error
-	select {
-	case runErr = <-done:
-	case <-ctx.Done():
-		_ = client.Close()
-		return combineCommandOutput(stdout.String(), stderr.String()), 124, fmt.Errorf("SSH command timed out after %d seconds", timeout)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+waiting:
+	for {
+		select {
+		case runErr = <-done:
+			break waiting
+		case <-ctx.Done():
+			_ = client.Close()
+			return combineCommandOutput(stdout.String(), stderr.String()), 124, fmt.Errorf("SSH command cancelled or timed out after %d seconds", timeout)
+		case <-ticker.C:
+			snapshot := *record
+			snapshot.Stdout, snapshot.Stderr = stdout.String(), stderr.String()
+			snapshot.Output = combineCommandOutput(snapshot.Stdout, snapshot.Stderr)
+			a.auditMu.Lock()
+			err := a.saveAuditLocked(snapshot)
+			a.auditMu.Unlock()
+			if err != nil {
+				_ = client.Close()
+				return snapshot.Output, -1, errors.New("audit persistence failed; connection closed")
+			}
+		}
 	}
+
 	output := combineCommandOutput(stdout.String(), stderr.String())
 	if runErr == nil {
 		return output, 0, nil

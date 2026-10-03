@@ -285,7 +285,7 @@ func (a *App) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		a.renderLogin(w, loginPageData{Next: pending.Next, Error: "此第三方账号未获 SSH Hub 管理权限。"}, http.StatusForbidden)
 		return
 	}
-	a.finishLogin(w, r, pending.Next)
+	a.finishLoginAs(w, r, pending.Next, "oidc:"+claims.Subject)
 }
 
 func (a *App) oidcRedirectURL(host string) string {

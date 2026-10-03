@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,28 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "login" || os.Args[1] == "mcp") {
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := runClientCommand(ctx, os.Args[1:]); err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--help", "-h":
+			fmt.Println("Usage: ssh-hub [serve] | login --url URL [--profile NAME] [--force] | mcp --url URL [--profile NAME]")
+			return
+		case "--version":
+			fmt.Println("ssh-hub 0.2.0")
+			return
+		case "serve":
+		default:
+			log.Fatalf("unknown command %q; use --help", os.Args[1])
+		}
+	}
 	dataDir := envOr("SSHHUB_DATA_DIR", "/data")
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		log.Fatalf("create data directory: %v", err)
@@ -24,7 +47,14 @@ func main() {
 	if err := validatePublicURL(publicURL); err != nil {
 		log.Fatalf("invalid SSHHUB_PUBLIC_URL: %v", err)
 	}
+	if err := migrateClientPolicies(store); err != nil {
+		log.Fatalf("migrate client permissions: %v", err)
+	}
 	app := newApp(store, publicURL)
+	app.keysDir = envOr("SSHHUB_KEYS_DIR", "/keys")
+	if err := app.recoverAuditSessions(); err != nil {
+		log.Fatalf("recover audit sessions: %v", err)
+	}
 	if adminURL := strings.TrimRight(os.Getenv("SSHHUB_ADMIN_URL"), "/"); adminURL != "" {
 		if err := validatePublicURL(adminURL); err != nil {
 			log.Fatalf("invalid SSHHUB_ADMIN_URL: %v", err)

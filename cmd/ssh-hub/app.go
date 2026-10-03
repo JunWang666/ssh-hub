@@ -19,6 +19,7 @@ import (
 var webFiles embed.FS
 
 type Session struct {
+	Actor     string
 	CSRF      string
 	ExpiresAt time.Time
 }
@@ -27,6 +28,8 @@ type App struct {
 	store          *Store
 	publicURL      string
 	adminURL       string
+	keysDir        string
+	auditMu        sync.Mutex
 	secureCookie   bool
 	setup          sync.Mutex
 	setupSecret    string
@@ -150,13 +153,24 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /oauth/authorize", a.handleAuthorizeGet)
 	mux.HandleFunc("POST /oauth/authorize", a.handleAuthorizePost)
 	mux.HandleFunc("POST /oauth/token", a.handleToken)
+	mux.HandleFunc("POST /oauth/device/code", a.handleDeviceCode)
+	mux.HandleFunc("GET /oauth/device/verify", a.handleDeviceVerifyGet)
+	mux.HandleFunc("POST /oauth/device/verify", a.handleDeviceVerifyPost)
 	mux.HandleFunc("POST /oauth/revoke", a.handleRevoke)
 	mux.HandleFunc("GET /api/overview", a.handleOverview)
 	mux.HandleFunc("POST /api/keys", a.handleCreateKey)
+	mux.HandleFunc("POST /api/keys/{id}/install", a.handleKeyInstallLink)
+	mux.HandleFunc("GET /install/{token}", a.handleInstallScript)
+	mux.HandleFunc("GET /public-keys/{token}", a.handlePublicKey)
 	mux.HandleFunc("DELETE /api/keys/{id}", a.handleDeleteKey)
 	mux.HandleFunc("POST /api/hosts", a.handleCreateHost)
+	mux.HandleFunc("POST /api/hosts/probe", a.handleProbeHost)
 	mux.HandleFunc("DELETE /api/hosts/{id}", a.handleDeleteHost)
 	mux.HandleFunc("DELETE /api/clients/{id}", a.handleDeleteClient)
+	mux.HandleFunc("PUT /api/clients/{id}/policy", a.handleClientPolicy)
+	mux.HandleFunc("GET /api/audit", a.handleAuditList)
+	mux.HandleFunc("GET /api/audit/{id}", a.handleAuditGet)
+	mux.HandleFunc("POST /api/audit/{id}/decision", a.handleAuditDecision)
 	mux.HandleFunc("GET /mcp", a.handleMCP)
 	mux.HandleFunc("POST /mcp", a.handleMCP)
 	return a.securityHeaders(mux)
@@ -171,6 +185,9 @@ func (a *App) securityHeaders(next http.Handler) http.Handler {
 		if a.adminURL != "" && hostMatchesOrigin(r.Host, a.publicURL) && !publicMCPPathAllowed(r.Method, r.URL.Path) {
 			http.NotFound(w, r)
 			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ui" {
+			w.Header().Set("Cache-Control", "no-store")
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -221,14 +238,17 @@ func hostMatchesOrigin(host, origin string) bool {
 }
 
 func publicMCPPathAllowed(method, path string) bool {
+	if strings.HasPrefix(path, "/install/") || strings.HasPrefix(path, "/public-keys/") {
+		return method == http.MethodGet
+	}
 	switch path {
 	case "/mcp":
 		return method == http.MethodGet || method == http.MethodPost
 	case "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp":
 		return method == http.MethodGet
-	case "/oauth/register", "/oauth/token", "/oauth/revoke":
+	case "/oauth/register", "/oauth/token", "/oauth/revoke", "/oauth/device/code":
 		return method == http.MethodPost
-	case "/oauth/authorize":
+	case "/oauth/authorize", "/oauth/device/verify":
 		return method == http.MethodGet || method == http.MethodPost
 	case "/login":
 		return method == http.MethodGet || method == http.MethodPost
@@ -291,6 +311,10 @@ func (a *App) currentSession(r *http.Request) (string, Session, bool) {
 }
 
 func (a *App) createSession(w http.ResponseWriter) (Session, error) {
+	return a.createSessionForActor(w, "local-admin")
+}
+
+func (a *App) createSessionForActor(w http.ResponseWriter, actor string) (Session, error) {
 	key, err := randomToken(32)
 	if err != nil {
 		return Session{}, err
@@ -299,7 +323,7 @@ func (a *App) createSession(w http.ResponseWriter) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	session := Session{CSRF: csrf, ExpiresAt: time.Now().Add(12 * time.Hour)}
+	session := Session{Actor: actor, CSRF: csrf, ExpiresAt: time.Now().Add(12 * time.Hour)}
 	a.sessionsMu.Lock()
 	for oldKey, old := range a.sessions {
 		if time.Now().After(old.ExpiresAt) {
@@ -352,7 +376,7 @@ func (a *App) checkCSRF(w http.ResponseWriter, r *http.Request) (Session, bool) 
 }
 
 func safeAuthorizePath(r *http.Request) string {
-	if r.URL.Path == "/oauth/authorize" {
+	if r.URL.Path == "/oauth/authorize" || r.URL.Path == "/oauth/device/verify" {
 		return r.URL.RequestURI()
 	}
 	return "/ui"
@@ -360,7 +384,7 @@ func safeAuthorizePath(r *http.Request) string {
 
 func safeNext(value string) string {
 	u, err := url.Parse(value)
-	if err != nil || u.IsAbs() || u.Host != "" || u.Path != "/oauth/authorize" || strings.HasPrefix(value, "//") || strings.Contains(value, "\\") {
+	if err != nil || u.IsAbs() || u.Host != "" || (u.Path != "/oauth/authorize" && u.Path != "/oauth/device/verify") || strings.HasPrefix(value, "//") || strings.Contains(value, "\\") {
 		return "/ui"
 	}
 	return u.RequestURI()

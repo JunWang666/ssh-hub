@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,7 +35,7 @@ func TestBrowserConsentSubmission(t *testing.T) {
 	}
 	results := make(chan result, 1)
 	routes := app.routes()
-	server := httptest.NewServer(app.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(app.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/start":
 			session, err := app.createSession(w)
@@ -59,12 +61,13 @@ func TestBrowserConsentSubmission(t *testing.T) {
 		}
 	})))
 	defer server.Close()
-	app.publicURL = server.URL
-	client.RedirectURIs = []string{server.URL + "/callback"}
-	code = AuthCode{ClientID: client.ID, RedirectURI: client.RedirectURIs[0], Challenge: base64.RawURLEncoding.EncodeToString(make([]byte, 32)), Scope: "mcp", Resource: server.URL + "/mcp"}
+	app.publicURL = "http://" + server.Listener.Addr().String()
+	client.RedirectURIs = []string{app.publicURL + "/callback"}
+	code = AuthCode{ClientID: client.ID, RedirectURI: client.RedirectURIs[0], Challenge: base64.RawURLEncoding.EncodeToString(make([]byte, 32)), Scope: "mcp", Resource: app.publicURL + "/mcp"}
 	if err := store.update(func(state *State) error { state.Clients[client.ID] = client; return nil }); err != nil {
 		t.Fatal(err)
 	}
+	server.Start()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, browser, "--headless", "--no-sandbox", "--disable-gpu", "--no-proxy-server", "--user-data-dir="+t.TempDir(), "--dump-dom", server.URL+"/start")
@@ -80,5 +83,81 @@ func TestBrowserConsentSubmission(t *testing.T) {
 		t.Logf("native consent POST: Origin=%s, status=%d, authorization code issued", got.origin, got.status)
 	default:
 		t.Fatal("browser did not submit the consent form")
+	}
+}
+
+func TestBrowserAdminWorkflow(t *testing.T) {
+	browser := os.Getenv("SSHHUB_TEST_CHROMIUM")
+	if browser == "" {
+		t.Skip("set SSHHUB_TEST_CHROMIUM")
+	}
+	a := featureApp(t)
+	a.adminURL = ""
+	host, _, _ := setupExecution(t, a, true)
+	routes := a.routes()
+	results := make(chan string, 1)
+	script := `<script>
+window.confirm=()=>true;
+(async()=>{
+const pause=()=>new Promise(r=>setTimeout(r,50));
+async function waitFor(fn){for(let n=0;n<100;n++){if(fn())return;await pause()}throw new Error('UI wait timed out')}
+await load();
+document.getElementById('key-name').value='browser-generated';
+document.getElementById('key-form').requestSubmit();
+await waitFor(()=>!document.getElementById('key-install').hidden);
+if(!document.getElementById('install-command').value.includes('/install/'))throw new Error('missing install command');
+document.getElementById('host-name').value='browser-host';
+document.getElementById('host-address').value=ADDRESS;
+document.getElementById('host-user').value='tester';
+document.getElementById('probe-host').click();
+await waitFor(()=>document.getElementById('host-fingerprint').value.startsWith('SHA256:'));
+document.getElementById('host-key').selectedIndex=1;
+document.getElementById('host-form').requestSubmit();
+await waitFor(()=>document.getElementById('hosts-list').textContent.includes('browser-host'));
+await loadAudit();
+await fetch('/test-result',{method:'POST',body:'ok'});
+})().catch(async e=>{await fetch('/test-result',{method:'POST',body:String(e)})});
+</script>`
+	address, _ := json.Marshal(host.Address)
+	script = strings.Replace(script, "ADDRESS", string(address), 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			_, _ = a.createSession(w)
+			http.Redirect(w, r, "/ui", 303)
+		case "/test-result":
+			body, _ := io.ReadAll(r.Body)
+			results <- string(body)
+			w.WriteHeader(204)
+		case "/ui":
+			recorder := httptest.NewRecorder()
+			routes.ServeHTTP(recorder, r)
+			for k, v := range recorder.Header() {
+				w.Header()[k] = v
+			}
+			w.WriteHeader(recorder.Code)
+			_, _ = w.Write(recorder.Body.Bytes())
+			_, _ = io.WriteString(w, script)
+		default:
+			routes.ServeHTTP(w, r)
+		}
+	}))
+	defer server.Close()
+	a.publicURL = "http://" + server.Listener.Addr().String()
+	server.Start()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, browser, "--headless", "--no-sandbox", "--disable-gpu", "--no-proxy-server", "--user-data-dir="+t.TempDir(), "--virtual-time-budget=12000", "--dump-dom", server.URL+"/start")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("browser: %v %s", err, output)
+	}
+	select {
+	case result := <-results:
+		if result != "ok" {
+			t.Fatal(result)
+		}
+	default:
+		t.Fatalf("browser workflow did not finish: %s", output)
 	}
 }

@@ -26,7 +26,8 @@ func (a *App) handleAuthorizationMetadata(w http.ResponseWriter, r *http.Request
 		"registration_endpoint":                          a.publicURL + "/oauth/register",
 		"revocation_endpoint":                            a.publicURL + "/oauth/revoke",
 		"response_types_supported":                       []string{"code"},
-		"grant_types_supported":                          []string{"authorization_code", "refresh_token"},
+		"grant_types_supported":                          []string{"authorization_code", "refresh_token", deviceGrantType},
+		"device_authorization_endpoint":                  a.publicURL + "/oauth/device/code",
 		"token_endpoint_auth_methods_supported":          []string{"none"},
 		"code_challenge_methods_supported":               []string{"S256"},
 		"scopes_supported":                               []string{"mcp"},
@@ -69,7 +70,8 @@ func (a *App) handleRegistration(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_client_metadata", "request must contain exactly one JSON object")
 		return
 	}
-	if len(request.RedirectURIs) == 0 || len(request.RedirectURIs) > 32 {
+	deviceOnly := hasValue(request.GrantTypes, deviceGrantType) && !hasValue(request.GrantTypes, "authorization_code")
+	if (len(request.RedirectURIs) == 0 && !deviceOnly) || len(request.RedirectURIs) > 32 {
 		oauthError(w, http.StatusBadRequest, "invalid_redirect_uri", "one to 32 redirect_uris are required")
 		return
 	}
@@ -89,7 +91,7 @@ func (a *App) handleRegistration(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_client_metadata", "only the mcp scope is supported")
 		return
 	}
-	if !onlyAllowedValues(request.GrantTypes, "authorization_code", "refresh_token") || !onlyAllowedValues(request.ResponseTypes, "code") || (len(request.GrantTypes) > 0 && !hasValue(request.GrantTypes, "authorization_code")) {
+	if !onlyAllowedValues(request.GrantTypes, "authorization_code", "refresh_token", deviceGrantType) || !onlyAllowedValues(request.ResponseTypes, "code") || (len(request.GrantTypes) > 0 && !hasValue(request.GrantTypes, "authorization_code") && !hasValue(request.GrantTypes, deviceGrantType)) {
 		oauthError(w, http.StatusBadRequest, "invalid_client_metadata", "only authorization_code, optional refresh_token, and code response are supported")
 		return
 	}
@@ -106,7 +108,7 @@ func (a *App) handleRegistration(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusInternalServerError, "server_error", "could not create client")
 		return
 	}
-	client := OAuthClient{ID: clientID, Name: request.ClientName, RedirectURIs: request.RedirectURIs, RefreshEnabled: hasValue(request.GrantTypes, "refresh_token"), CreatedAt: time.Now().UTC()}
+	client := OAuthClient{DeviceEnabled: hasValue(request.GrantTypes, deviceGrantType), HostAccessConfigured: true, RequireApproval: true, ID: clientID, Name: request.ClientName, RedirectURIs: request.RedirectURIs, RefreshEnabled: hasValue(request.GrantTypes, "refresh_token"), CreatedAt: time.Now().UTC()}
 	err = a.store.update(func(state *State) error {
 		if len(state.Clients) >= 2000 {
 			return fmt.Errorf("client registration limit reached")
@@ -150,10 +152,17 @@ func hasValue(values []string, expected string) bool {
 }
 
 func clientGrantTypes(client OAuthClient) []string {
-	if client.RefreshEnabled {
-		return []string{"authorization_code", "refresh_token"}
+	grants := []string{}
+	if len(client.RedirectURIs) > 0 || !client.DeviceEnabled {
+		grants = append(grants, "authorization_code")
 	}
-	return []string{"authorization_code"}
+	if client.DeviceEnabled {
+		grants = append(grants, deviceGrantType)
+	}
+	if client.RefreshEnabled {
+		grants = append(grants, "refresh_token")
+	}
+	return grants
 }
 
 func validRedirectURI(value string) bool {
@@ -315,6 +324,8 @@ func (a *App) handleToken(w http.ResponseWriter, r *http.Request) {
 		a.handleAuthorizationCodeGrant(w, r)
 	case "refresh_token":
 		a.handleRefreshTokenGrant(w, r)
+	case deviceGrantType:
+		a.handleDeviceToken(w, r)
 	default:
 		oauthError(w, http.StatusBadRequest, "unsupported_grant_type", "supported grants are authorization_code and refresh_token")
 	}

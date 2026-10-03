@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,9 +23,16 @@ var usernamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$`)
 var dnsLabelPattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 type publicKey struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	CreatedAt      time.Time `json:"createdAt"`
+	Source         string    `json:"source"`
+	Path           string    `json:"path,omitempty"`
+	PublicKey      string    `json:"publicKey,omitempty"`
+	Fingerprint    string    `json:"fingerprint,omitempty"`
+	InstallURL     string    `json:"installURL,omitempty"`
+	PublicKeyURL   string    `json:"publicKeyURL,omitempty"`
+	InstallCommand string    `json:"installCommand,omitempty"`
 }
 
 type publicHost struct {
@@ -38,10 +48,13 @@ type publicHost struct {
 }
 
 type publicClient struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	RedirectURIs []string  `json:"redirectURIs"`
-	CreatedAt    time.Time `json:"createdAt"`
+	HostAccessConfigured bool      `json:"hostAccessConfigured"`
+	AllowedHostIDs       []string  `json:"allowedHostIds"`
+	RequireApproval      bool      `json:"requireApproval"`
+	ID                   string    `json:"id"`
+	Name                 string    `json:"name"`
+	RedirectURIs         []string  `json:"redirectURIs"`
+	CreatedAt            time.Time `json:"createdAt"`
 }
 
 func (a *App) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +66,7 @@ func (a *App) handleOverview(w http.ResponseWriter, r *http.Request) {
 	var clients []publicClient
 	_ = a.store.view(func(state State) error {
 		for _, key := range state.Keys {
-			keys = append(keys, publicKey{ID: key.ID, Name: key.Name, CreatedAt: key.CreatedAt})
+			keys = append(keys, a.keyInfo(key))
 		}
 		for _, host := range state.Hosts {
 			key := state.Keys[host.KeyID]
@@ -64,7 +77,7 @@ func (a *App) handleOverview(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		for _, client := range state.Clients {
-			clients = append(clients, publicClient{ID: client.ID, Name: client.Name, RedirectURIs: client.RedirectURIs, CreatedAt: client.CreatedAt})
+			clients = append(clients, publicClient{HostAccessConfigured: client.HostAccessConfigured, AllowedHostIDs: client.AllowedHostIDs, RequireApproval: client.RequireApproval, ID: client.ID, Name: client.Name, RedirectURIs: client.RedirectURIs, CreatedAt: client.CreatedAt})
 		}
 		return nil
 	})
@@ -81,6 +94,8 @@ func (a *App) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 type createKeyRequest struct {
+	Source     string `json:"source"`
+	Path       string `json:"path"`
 	Name       string `json:"name"`
 	PrivateKey string `json:"privateKey"`
 	Passphrase string `json:"passphrase"`
@@ -96,37 +111,12 @@ func (a *App) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式无效或内容过大"})
 		return
 	}
-	request.Name = strings.TrimSpace(request.Name)
-	request.PrivateKey = strings.TrimSpace(request.PrivateKey)
-	if request.Name == "" || len(request.Name) > 80 || request.PrivateKey == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "密钥名称和私钥内容为必填项"})
-		return
-	}
-	if _, err := parsePrivateKey(request.PrivateKey, request.Passphrase); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无法解析私钥，请确认私钥内容和口令正确"})
-		return
-	}
-	material, err := json.Marshal(map[string]string{"privateKey": request.PrivateKey, "passphrase": request.Passphrase})
+	key, err := a.createKey(request)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法保存密钥"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	secret, err := a.store.encryptSecret(material)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法加密密钥"})
-		return
-	}
-	id, err := randomToken(9)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法创建密钥记录"})
-		return
-	}
-	key := StoredKey{ID: id, Name: request.Name, Secret: secret, CreatedAt: time.Now().UTC()}
-	if err := a.store.update(func(state *State) error { state.Keys[key.ID] = key; return nil }); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法写入数据目录"})
-		return
-	}
-	writeJSON(w, http.StatusCreated, publicKey{ID: key.ID, Name: key.Name, CreatedAt: key.CreatedAt})
+	writeJSON(w, http.StatusCreated, a.keyInfo(key))
 }
 
 func parsePrivateKey(privateKey, passphrase string) (ssh.Signer, error) {
@@ -144,6 +134,7 @@ func (a *App) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	var removed StoredKey
 	err := a.store.update(func(state *State) error {
 		if _, ok := state.Keys[id]; !ok {
 			return errors.New("密钥不存在")
@@ -153,12 +144,19 @@ func (a *App) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 				return errors.New("该密钥仍被 SSH 主机使用")
 			}
 		}
+		removed = state.Keys[id]
 		delete(state.Keys, id)
 		return nil
 	})
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
+	}
+	if removed.Source == "generated" {
+		_ = os.Remove(filepath.Join(a.generatedKeysDir(), removed.Path) + ".pub")
+		if err := os.Remove(filepath.Join(a.generatedKeysDir(), removed.Path)); err != nil && !os.IsNotExist(err) {
+			log.Printf("remove generated key file %s: %v", removed.ID, err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -305,6 +303,11 @@ func (a *App) handleDeleteClient(w http.ResponseWriter, r *http.Request) {
 			return errors.New("客户端不存在")
 		}
 		delete(state.Clients, id)
+		for digest, grant := range state.DeviceGrants {
+			if grant.ClientID == id {
+				delete(state.DeviceGrants, digest)
+			}
+		}
 		for digest, code := range state.Codes {
 			if code.ClientID == id {
 				delete(state.Codes, digest)

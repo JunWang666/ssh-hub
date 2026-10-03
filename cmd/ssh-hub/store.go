@@ -21,6 +21,7 @@ import (
 )
 
 type State struct {
+	DeviceGrants  map[string]DeviceGrant  `json:"device_grants,omitempty"`
 	PasswordHash  string                  `json:"password_hash,omitempty"`
 	Hosts         map[string]Host         `json:"hosts"`
 	Keys          map[string]StoredKey    `json:"keys"`
@@ -31,10 +32,14 @@ type State struct {
 }
 
 type StoredKey struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Secret    string    `json:"secret"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Secret       string    `json:"secret"`
+	Source       string    `json:"source,omitempty"`
+	Path         string    `json:"path,omitempty"`
+	PublicKey    string    `json:"public_key,omitempty"`
+	InstallToken string    `json:"install_token,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type Host struct {
@@ -49,11 +54,15 @@ type Host struct {
 }
 
 type OAuthClient struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	RedirectURIs   []string  `json:"redirect_uris"`
-	RefreshEnabled bool      `json:"refresh_enabled,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	DeviceEnabled        bool      `json:"device_enabled,omitempty"`
+	ID                   string    `json:"id"`
+	Name                 string    `json:"name"`
+	RedirectURIs         []string  `json:"redirect_uris"`
+	RefreshEnabled       bool      `json:"refresh_enabled,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	HostAccessConfigured bool      `json:"host_access_configured,omitempty"`
+	AllowedHostIDs       []string  `json:"allowed_host_ids,omitempty"`
+	RequireApproval      bool      `json:"require_approval,omitempty"`
 }
 
 type AuthCode struct {
@@ -160,6 +169,9 @@ func loadOrCreateMasterKey(path string) ([]byte, error) {
 }
 
 func normalizeState(state *State) {
+	if state.DeviceGrants == nil {
+		state.DeviceGrants = map[string]DeviceGrant{}
+	}
 	if state.Hosts == nil {
 		state.Hosts = map[string]Host{}
 	}
