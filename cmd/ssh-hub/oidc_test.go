@@ -83,6 +83,68 @@ func TestValidateOIDCIssuer(t *testing.T) {
 	}
 }
 
+func TestAdminOriginIsAllowedSeparatelyFromPublicOrigin(t *testing.T) {
+	app := &App{publicURL: "https://sshhub.example.test", adminURL: "https://sshadmin.example.test"}
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{host: "sshhub.example.test", want: true},
+		{host: "sshadmin.example.test", want: true},
+		{host: "untrusted.example.test", want: false},
+		{host: "sshadmin.example.test:8443", want: false},
+	}
+	for _, tt := range tests {
+		if got := app.validRequestHost(tt.host); got != tt.want {
+			t.Errorf("validRequestHost(%q) = %t, want %t", tt.host, got, tt.want)
+		}
+	}
+	if got := app.oidcRedirectURL("sshhub.example.test"); got != "https://sshhub.example.test"+oidcCallbackPath {
+		t.Errorf("public OIDC redirect = %q", got)
+	}
+	if got := app.oidcRedirectURL("sshadmin.example.test"); got != "https://sshadmin.example.test"+oidcCallbackPath {
+		t.Errorf("admin OIDC redirect = %q", got)
+	}
+}
+
+func TestPublicOriginHidesManagementRoutesWhenAdminOriginIsConfigured(t *testing.T) {
+	app := &App{publicURL: "https://sshhub.example.test", adminURL: "https://sshadmin.example.test"}
+	handler := app.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	tests := []struct {
+		name   string
+		host   string
+		method string
+		path   string
+		want   int
+	}{
+		{name: "MCP POST", host: "sshhub.example.test", method: http.MethodPost, path: "/mcp", want: http.StatusNoContent},
+		{name: "MCP GET", host: "sshhub.example.test", method: http.MethodGet, path: "/mcp", want: http.StatusNoContent},
+		{name: "OAuth metadata", host: "sshhub.example.test", method: http.MethodGet, path: "/.well-known/oauth-authorization-server", want: http.StatusNoContent},
+		{name: "DCR", host: "sshhub.example.test", method: http.MethodPost, path: "/oauth/register", want: http.StatusNoContent},
+		{name: "authorization page", host: "sshhub.example.test", method: http.MethodGet, path: "/oauth/authorize", want: http.StatusNoContent},
+		{name: "login page", host: "sshhub.example.test", method: http.MethodGet, path: "/login", want: http.StatusNoContent},
+		{name: "admin UI hidden", host: "sshhub.example.test", method: http.MethodGet, path: "/ui", want: http.StatusNotFound},
+		{name: "admin API hidden", host: "sshhub.example.test", method: http.MethodGet, path: "/api/overview", want: http.StatusNotFound},
+		{name: "logout hidden", host: "sshhub.example.test", method: http.MethodPost, path: "/logout", want: http.StatusNotFound},
+		{name: "wrong method hidden", host: "sshhub.example.test", method: http.MethodGet, path: "/oauth/token", want: http.StatusNotFound},
+		{name: "admin UI allowed on admin host", host: "sshadmin.example.test", method: http.MethodGet, path: "/ui", want: http.StatusNoContent},
+		{name: "unknown host rejected", host: "untrusted.example.test", method: http.MethodGet, path: "/ui", want: http.StatusMisdirectedRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(tt.method, tt.path, nil)
+			request.Host = tt.host
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != tt.want {
+				t.Fatalf("status = %d, want %d", response.Code, tt.want)
+			}
+		})
+	}
+}
+
 func TestOIDCLoginUsesPKCEAndCreatesSession(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -95,7 +157,8 @@ func TestOIDCLoginUsesPKCEAndCreatesSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := newApp(store, "http://localhost:8080")
+	app := newApp(store, "https://sshhub.example.test")
+	app.adminURL = "https://sshadmin.example.test"
 	if err := app.configureOIDCWithHTTPClient(oidcSettings{
 		Issuer: issuer, ClientID: "ssh-hub-client", ClientSecret: "test-secret",
 		AllowedEmails: "admin@example.com",
@@ -105,7 +168,7 @@ func TestOIDCLoginUsesPKCEAndCreatesSession(t *testing.T) {
 	handler := app.routes()
 
 	startRequest := httptest.NewRequest(http.MethodGet, "/auth/oidc?next=%2Fui", nil)
-	startRequest.Host = "localhost:8080"
+	startRequest.Host = "sshadmin.example.test"
 	startResponse := httptest.NewRecorder()
 	handler.ServeHTTP(startResponse, startRequest)
 	if startResponse.Code != http.StatusSeeOther {
@@ -116,6 +179,9 @@ func TestOIDCLoginUsesPKCEAndCreatesSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := authURL.Query()
+	if got := query.Get("redirect_uri"); got != app.adminURL+oidcCallbackPath {
+		t.Fatalf("OIDC redirect_uri = %q, want admin callback", got)
+	}
 	state := query.Get("state")
 	if query.Get("code_challenge_method") != "S256" {
 		t.Fatalf("PKCE method = %q, want S256", query.Get("code_challenge_method"))
@@ -153,7 +219,7 @@ func TestOIDCLoginUsesPKCEAndCreatesSession(t *testing.T) {
 
 	callbackQuery := url.Values{"state": {state}, "code": {"test-code"}}
 	callbackRequest := httptest.NewRequest(http.MethodGet, oidcCallbackPath+"?"+callbackQuery.Encode(), nil)
-	callbackRequest.Host = "localhost:8080"
+	callbackRequest.Host = "sshadmin.example.test"
 	for _, cookie := range startResponse.Result().Cookies() {
 		callbackRequest.AddCookie(cookie)
 	}
@@ -164,9 +230,13 @@ func TestOIDCLoginUsesPKCEAndCreatesSession(t *testing.T) {
 	}
 	transport.mu.Lock()
 	verifier := transport.codeVerifier
+	redirectURI := transport.redirectURI
 	transport.mu.Unlock()
 	if verifier != pending.Verifier {
 		t.Fatalf("token exchange PKCE verifier = %q, want %q", verifier, pending.Verifier)
+	}
+	if redirectURI != app.adminURL+oidcCallbackPath {
+		t.Fatalf("token exchange redirect_uri = %q, want admin callback", redirectURI)
 	}
 	foundSession := false
 	for _, cookie := range callbackResponse.Result().Cookies() {
@@ -185,6 +255,7 @@ type oidcTestTransport struct {
 	mu           sync.Mutex
 	idToken      string
 	codeVerifier string
+	redirectURI  string
 }
 
 func (f *oidcTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -214,6 +285,7 @@ func (f *oidcTestTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		}
 		f.mu.Lock()
 		f.codeVerifier = form.Get("code_verifier")
+		f.redirectURI = form.Get("redirect_uri")
 		idToken := f.idToken
 		f.mu.Unlock()
 		tokenResponse, err := json.Marshal(map[string]any{

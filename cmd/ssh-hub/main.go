@@ -25,6 +25,12 @@ func main() {
 		log.Fatalf("invalid SSHHUB_PUBLIC_URL: %v", err)
 	}
 	app := newApp(store, publicURL)
+	if adminURL := strings.TrimRight(os.Getenv("SSHHUB_ADMIN_URL"), "/"); adminURL != "" {
+		if err := validatePublicURL(adminURL); err != nil {
+			log.Fatalf("invalid SSHHUB_ADMIN_URL: %v", err)
+		}
+		app.adminURL = adminURL
+	}
 	if err := app.configureOIDC(oidcSettingsFromEnv()); err != nil {
 		log.Fatalf("configure third-party identity provider: %v", err)
 	}
@@ -33,7 +39,11 @@ func main() {
 			log.Fatalf("initialize administrator password: %v", err)
 		}
 	} else if token := app.setupToken(); token != "" {
-		log.Printf("First run: open %s/login and enter this one-time setup token: %s", publicURL, token)
+		setupURL := publicURL
+		if app.adminURL != "" {
+			setupURL = app.adminURL
+		}
+		log.Printf("First run: open %s/login and enter this one-time setup token: %s", setupURL, token)
 	}
 
 	addr := envOr("SSHHUB_LISTEN_ADDR", ":8080")

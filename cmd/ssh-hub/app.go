@@ -25,6 +25,7 @@ type Session struct {
 type App struct {
 	store          *Store
 	publicURL      string
+	adminURL       string
 	secureCookie   bool
 	setup          sync.Mutex
 	setupSecret    string
@@ -166,6 +167,10 @@ func (a *App) securityHeaders(next http.Handler) http.Handler {
 			http.Error(w, "host not allowed", http.StatusMisdirectedRequest)
 			return
 		}
+		if a.adminURL != "" && hostMatchesOrigin(r.Host, a.publicURL) && !publicMCPPathAllowed(r.Method, r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -178,19 +183,40 @@ func (a *App) securityHeaders(next http.Handler) http.Handler {
 }
 
 func (a *App) validRequestHost(host string) bool {
-	public, err := url.Parse(a.publicURL)
+	return hostMatchesOrigin(host, a.publicURL) || hostMatchesOrigin(host, a.adminURL)
+}
+
+func hostMatchesOrigin(host, origin string) bool {
+	if origin == "" {
+		return false
+	}
+	parsed, err := url.Parse(origin)
 	if err != nil {
 		return false
 	}
-	expectedHost, expectedPort := hostPort(public.Host, public.Scheme)
-	actualHost, actualPort := hostPort(host, public.Scheme)
-	if expectedHost == "" || actualHost == "" || expectedPort != actualPort {
+	expectedHost, expectedPort := hostPort(parsed.Host, parsed.Scheme)
+	actualHost, actualPort := hostPort(host, parsed.Scheme)
+	return expectedHost != "" && expectedPort == actualPort && (strings.EqualFold(strings.TrimSuffix(expectedHost, "."), strings.TrimSuffix(actualHost, ".")) ||
+		isLoopbackHost(expectedHost) && isLoopbackHost(actualHost))
+}
+
+func publicMCPPathAllowed(method, path string) bool {
+	switch path {
+	case "/mcp":
+		return method == http.MethodGet || method == http.MethodPost
+	case "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp":
+		return method == http.MethodGet
+	case "/oauth/register", "/oauth/token", "/oauth/revoke":
+		return method == http.MethodPost
+	case "/oauth/authorize":
+		return method == http.MethodGet || method == http.MethodPost
+	case "/login":
+		return method == http.MethodGet || method == http.MethodPost
+	case "/auth/oidc", "/auth/oidc/callback":
+		return method == http.MethodGet
+	default:
 		return false
 	}
-	if strings.EqualFold(strings.TrimSuffix(expectedHost, "."), strings.TrimSuffix(actualHost, ".")) {
-		return true
-	}
-	return isLoopbackHost(expectedHost) && isLoopbackHost(actualHost)
 }
 
 func (a *App) allowClientRegistration(ip string) bool {

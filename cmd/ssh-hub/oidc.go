@@ -42,10 +42,11 @@ type oidcProvider struct {
 }
 
 type oidcLoginState struct {
-	Nonce     string
-	Verifier  string
-	Next      string
-	ExpiresAt time.Time
+	Nonce       string
+	Verifier    string
+	Next        string
+	RedirectURL string
+	ExpiresAt   time.Time
 }
 
 type oidcClaims struct {
@@ -183,6 +184,8 @@ func (a *App) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	verifier := oauth2.GenerateVerifier()
+	oauthConfig := provider.oauth
+	oauthConfig.RedirectURL = a.oidcRedirectURL(r.Host)
 	now := time.Now()
 	a.oidcMu.Lock()
 	for oldState, pending := range a.oidcLogins {
@@ -195,7 +198,10 @@ func (a *App) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "登录请求过多，请稍后重试。", http.StatusTooManyRequests)
 		return
 	}
-	a.oidcLogins[state] = oidcLoginState{Nonce: nonce, Verifier: verifier, Next: next, ExpiresAt: now.Add(oidcLoginTTL)}
+	a.oidcLogins[state] = oidcLoginState{
+		Nonce: nonce, Verifier: verifier, Next: next,
+		RedirectURL: oauthConfig.RedirectURL, ExpiresAt: now.Add(oidcLoginTTL),
+	}
 	a.oidcMu.Unlock()
 
 	http.SetCookie(w, &http.Cookie{
@@ -203,7 +209,7 @@ func (a *App) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, Secure: a.secureCookie, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(oidcLoginTTL.Seconds()),
 	})
-	authURL := provider.oauth.AuthCodeURL(state,
+	authURL := oauthConfig.AuthCodeURL(state,
 		oauth2.S256ChallengeOption(verifier),
 		oidc.Nonce(nonce),
 	)
@@ -253,7 +259,9 @@ func (a *App) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(oidc.ClientContext(r.Context(), provider.httpClient), 15*time.Second)
 	defer cancel()
-	token, err := provider.oauth.Exchange(ctx, code, oauth2.VerifierOption(pending.Verifier))
+	oauthConfig := provider.oauth
+	oauthConfig.RedirectURL = pending.RedirectURL
+	token, err := oauthConfig.Exchange(ctx, code, oauth2.VerifierOption(pending.Verifier))
 	if err != nil {
 		a.renderLogin(w, loginPageData{Next: pending.Next, Error: "无法验证第三方登录，请重试。"}, http.StatusUnauthorized)
 		return
@@ -278,6 +286,13 @@ func (a *App) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.finishLogin(w, r, pending.Next)
+}
+
+func (a *App) oidcRedirectURL(host string) string {
+	if hostMatchesOrigin(host, a.adminURL) {
+		return a.adminURL + oidcCallbackPath
+	}
+	return a.publicURL + oidcCallbackPath
 }
 
 func clearOIDCStateCookie(w http.ResponseWriter, a *App) {

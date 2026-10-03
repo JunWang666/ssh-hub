@@ -22,6 +22,14 @@ docker compose logs ssh-hub
 https://your-host.example/auth/oidc/callback
 ```
 
+If the management UI has a separate origin configured with `SSHHUB_ADMIN_URL`, register its callback too:
+
+```text
+https://your-admin-host.example/auth/oidc/callback
+```
+
+When `SSHHUB_ADMIN_URL` is set, the public origin serves MCP and OAuth routes while hiding the management UI and API. Put the separate admin origin behind Pangolin authentication.
+
 必须至少配置一个管理员允许列表：`SSHHUB_OIDC_ALLOWED_EMAILS` 接收逗号分隔的邮箱（只接受 IdP 标记为已验证的邮箱），`SSHHUB_OIDC_ALLOWED_SUBJECTS` 接收逗号分隔的精确 OIDC `sub` 值。未列入允许列表的 IdP 用户不能进入管理界面。成功登录后仍会继续走 SSH Hub 的 OAuth 授权确认页。`SSHHUB_OIDC_LABEL` 可自定义登录按钮文字；本地管理员密码登录仍然可用。
 
 ## 连接 MCP 客户端
@@ -58,6 +66,7 @@ ssh-keyscan -t ed25519 your-host.example | ssh-keygen -lf -
 | `SSHHUB_LISTEN_ADDR` | `:8080` | HTTP 监听地址 |
 | `SSHHUB_DATA_DIR` | Docker 中的 `/data` | 持久化数据目录 |
 | `SSHHUB_PUBLIC_URL` | `http://localhost:8080` | OAuth 发现和资源绑定所用的公网源站地址 |
+| `SSHHUB_ADMIN_URL` | 未设置 | 可选的独立管理入口源站；用于管理域名访问和第三方 IdP 回调 |
 | `SSHHUB_ADMIN_PASSWORD` | 未设置 | 可选的首次管理员密码，至少 12 个字符 |
 | `SSHHUB_OIDC_ISSUER` | 未设置 | OIDC issuer URL；应支持 `/.well-known/openid-configuration` |
 | `SSHHUB_OIDC_CLIENT_ID` | 未设置 | 在身份提供方注册的客户端 ID |
