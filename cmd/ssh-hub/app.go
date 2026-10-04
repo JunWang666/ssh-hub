@@ -34,6 +34,9 @@ type App struct {
 	healthMu           sync.Mutex
 	healthRun          sync.Mutex
 	health             map[string]HostHealth
+	agentScanMu        sync.RWMutex
+	agentScanRun       sync.Mutex
+	agentScan          AgentScanSnapshot
 	connectionsMu      sync.Mutex
 	connections        map[string]*persistentConnection
 	secureCookie       bool
@@ -182,6 +185,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/connections/{id}/transcript", a.handleTranscript)
 	mux.HandleFunc("POST /api/connections/{id}/check", a.handleConnectionCheck)
 	mux.HandleFunc("DELETE /api/connections/{id}", a.handleConnectionClose)
+	mux.HandleFunc("GET /api/agent-sessions", a.handleAgentSessions)
+	mux.HandleFunc("POST /api/agent-sessions/scan", a.handleAgentSessionScan)
 	mux.HandleFunc("DELETE /api/hosts/{id}", a.handleDeleteHost)
 	mux.HandleFunc("DELETE /api/clients/{id}", a.handleDeleteClient)
 	mux.HandleFunc("PUT /api/clients/{id}/policy", a.handleClientPolicy)

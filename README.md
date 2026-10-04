@@ -198,6 +198,8 @@ Agent 使用流程：
 | `DELETE /api/connections/{id}` | 关闭会话 |
 | `GET /api/connections/{id}/transcript?offset=0` | 分页读取会话输出 |
 
+管理台的“Herdr Agent”页面与“持久会话”分开展示。管理员可手动扫描已配置 SSH 主机上正在运行的 Herdr 会话；扫描复用主机密钥、跳板及主机指纹校验，只读取会话和 Agent 的名称、状态、项目目录等概要，不读取对话内容。结果缓存到下次扫描或 Hub 重启，页面刷新不会重新连接目标机。目标机需要 Python 3 和 Herdr；未安装 Herdr、SSH 离线或超时会按主机单独显示状态。
+
 
 ## 总管 Agent：一个工具控制远端 Coding Agent
 
