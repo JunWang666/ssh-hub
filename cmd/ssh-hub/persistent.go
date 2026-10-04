@@ -293,7 +293,7 @@ func (a *App) openPersistent(ctx context.Context, host Host, key StoredKey, reco
 	p.mu.Lock()
 	p.info.Status = "open"
 	p.mu.Unlock()
-	_, current, _, accessErr := a.resolveExecution(record.ClientID, host.ID)
+	_, current, _, accessErr := a.resolveExecution(record.ClientID, host.ID, "shell")
 	if accessErr != nil || current != host {
 		p.close("host access changed during connection")
 		return errors.New("host access changed during connection")
@@ -406,12 +406,22 @@ func (a *App) runPersistent(ctx context.Context, host Host, record *AuditSession
 	}
 }
 func (a *App) listConnections(clientID string) []ConnectionInfo {
+	allowed := map[string]bool{}
+	if clientID != "" {
+		_ = a.store.view(func(state State) error {
+			client := state.Clients[clientID]
+			for _, host := range state.Hosts {
+				allowed[host.ID] = clientAllowsFeature(client, host.ID, "shell")
+			}
+			return nil
+		})
+	}
 	a.connectionsMu.Lock()
 	defer a.connectionsMu.Unlock()
 	out := []ConnectionInfo{}
 	for _, p := range a.connections {
 		info := p.snapshot()
-		if clientID == "" || info.ClientID == clientID {
+		if clientID == "" || (info.ClientID == clientID && allowed[info.HostID]) {
 			out = append(out, info)
 		}
 	}
@@ -432,7 +442,7 @@ func (a *App) checkConnection(ctx context.Context, p *persistentConnection) Conn
 	if info.Status != "open" && info.Status != "busy" {
 		return info
 	}
-	_, h, _, err := a.resolveExecution(info.ClientID, info.HostID)
+	_, h, _, err := a.resolveExecution(info.ClientID, info.HostID, "shell")
 	if err != nil || h != p.host {
 		p.close("host access revoked or configuration changed")
 		return p.snapshot()
@@ -536,7 +546,7 @@ func (a *App) enforceConnectionPolicies() {
 		if info.Status != "open" && info.Status != "busy" {
 			continue
 		}
-		_, host, _, err := a.resolveExecution(info.ClientID, info.HostID)
+		_, host, _, err := a.resolveExecution(info.ClientID, info.HostID, "shell")
 		if err != nil || host != p.host {
 			p.close("host access revoked or configuration changed")
 		}

@@ -254,11 +254,18 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 				return nil
 			}
 			for _, host := range state.Hosts {
-				if !clientAllowsHost(client, host.ID) {
+				if !clientHasAnyFeature(client, host.ID) {
 					continue
 				}
+				features := []string{}
+				for _, feature := range []string{"exec", "shell", "agent"} {
+					if clientAllowsFeature(client, host.ID, feature) {
+						features = append(features, feature)
+					}
+				}
 				hosts = append(hosts, publicHost{
-					ID: host.ID, Name: host.Name, Address: host.Address, Username: host.Username,
+					AvailableFeatures: features,
+					ID:                host.ID, Name: host.Name, Address: host.Address, Username: host.Username,
 					KeyID: host.KeyID, KeyName: state.Keys[host.KeyID].Name,
 					HostKeyFingerprint: host.HostKeyFingerprint, TimeoutSeconds: host.TimeoutSeconds,
 					CreatedAt: host.CreatedAt,
@@ -335,7 +342,7 @@ func formatHostList(hosts []publicHost) string {
 	}
 	var builder strings.Builder
 	for _, host := range hosts {
-		fmt.Fprintf(&builder, "- id: %s | name: %s | address: %s | user: %s | key: %s\n", host.ID, host.Name, host.Address, host.Username, host.KeyName)
+		fmt.Fprintf(&builder, "- id: %s | name: %s | address: %s | user: %s | key: %s | features: %s\n", host.ID, host.Name, host.Address, host.Username, host.KeyName, strings.Join(host.AvailableFeatures, ","))
 	}
 	return strings.TrimSpace(builder.String())
 }

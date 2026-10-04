@@ -89,7 +89,7 @@ SSHHUB_KEYS_MOUNT=/opt/ssh-hub/keys
 
 ## 客户端机器权限、审批和审计
 
-在“OAuth 客户端”中为每个客户端勾选允许访问的机器，并保存。机器列表和执行入口都会检查权限；猜测其他机器 ID 不能绕过限制。新注册客户端默认没有机器权限，且要求审批。
+在“客户端权限”中，可对每个客户端、每台机器分别勾选功能：SSH 单次命令、持久 Shell（含会话命令、输出、探测与关闭）和 Herdr Agent。未勾选的功能会由服务端拒绝，不只是从工具列表隐藏；没有任何功能的机器也不会出现在客户端机器列表中。新注册客户端默认没有机器功能权限，且要求审批。旧客户端升级时会保留原有机器访问范围，并为这些机器启用全部现有功能；新增机器不会自动授权。
 
 升级前已有的客户端首次启动时会迁移为“仅允许当时已有的机器 + 需要审批”；以后新增机器不会自动授予这些客户端。可以在管理台修改范围，或关闭指定客户端的逐次审批。
 
@@ -207,7 +207,7 @@ Agent 使用流程：
 
 目标机要求 Linux/macOS、Python 3.6+、Herdr，以及已安装并完成登录的 `codex`、`claude` 或 `opencode`。这些程序需要在 SSH 登录用户的 PATH 中；控制器也会查找该用户的 `~/.local/bin` 和 `~/.cargo/bin`。不需要在 SSH Hub Docker 容器里安装这些程序。Herdr CLI 接口已用 0.8.2 验证；升级后建议重跑下方集成测试。功能与参数参考 [Herdr 自动化文档](https://herdr.dev/docs/agent-automation/)。
 
-首次 `start` 会启动专属的后台 Herdr 会话，但不会自动下载软件、安装集成或替你登录模型账号。会话按 Hub 实例、OAuth 客户端和主机划分，返回的 `herdr_session` 可供管理员在目标机执行 `herdr --session <herdr_session>` 进入查看。此工具只控制这个专属会话里的 Agent，不接管默认 Herdr 会话或任意既有进程。
+此工具只使用 SSH 登录用户已有的 Herdr `default` 会话；不会创建或启动 Herdr 会话 / server，也不会自动下载软件、安装集成或替你登录模型账号。目标机需先启动 Herdr default。`list` 会发现 default 中已有的 Agent；`start` 在 default 中创建一个 workspace 和独立终端来启动 Agent。相同 SSH 用户下的其他 Hub 客户端也能看到此 default 会话中的 Agent，因此应只向可信客户端授权对应主机。
 
 | action | 参数 | 行为 |
 | --- | --- | --- |
@@ -252,7 +252,7 @@ Agent 使用流程：
 
 `read` 是有界的当前画面快照，不是完整历史或增量日志；长结果建议要求 Agent 写入文件，再通过 SSH 读取。`idle`/`done` 表示终端可接收输入，不能替代测试或成果验收；`prompt_submitted: true` 仅表示输入已提交，不保证任务已开始或完成。总管关闭后若要主动唤醒，需要额外的调度/通知机制。
 
-每个 Agent 有独立终端，但不会自动创建 Git worktree；并行改代码时应先准备各自的 worktree，并分别设置 cwd。会话划分是工具层归属控制，不是操作系统隔离；拥有通用 ssh_exec 的客户端仍拥有相应 SSH 用户的执行能力。Hub 的逐次审批也不代替 Agent 内部命令权限。撤销客户端权限会禁止后续控制，但不会自动终止远端 Agent；需要先 stop 或由管理员处理。
+每个 Agent 有独立终端，但不会自动创建 Git worktree；并行改代码时应先准备各自的 worktree，并分别设置 cwd。Herdr default 中的 Agent 不按 Hub 客户端隔离；拥有该主机权限的客户端可能控制该 SSH 用户 Herdr default 中的 Agent。拥有通用 ssh_exec 的客户端也拥有相应 SSH 用户的执行能力。Hub 的逐次审批不代替 Agent 内部命令权限。撤销客户端权限会禁止后续控制，但不会自动终止远端 Agent；需要先 stop 或由管理员处理。
 
 可选的真实 Herdr 集成测试使用临时 SSH 跳板、隔离 Herdr 配置和模拟 Coding Agent，不使用模型额度，也不接触现有会话：
 

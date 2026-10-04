@@ -24,7 +24,7 @@ func agentTool() map[string]any {
 	str := func(d string) map[string]any { return map[string]any{"type": "string", "description": d} }
 	return map[string]any{
 		"name":        "ssh_agent",
-		"description": "Control remote coding agents via Herdr in a client-owned session. action: start/list/status/read/prompt/keys/wait/interrupt/stop; host_id required. start needs cwd (kind defaults codex), others need agent_id except list. text submits a prompt; keys answers terminal dialogs. read returns a bounded snapshot, not a transcript. result + session_id polls Hub approval/execution; never blindly retry mutations. Agent idle/done is not task success. Requires remote Herdr and Python 3.",
+		"description": "Control remote coding agents in the target user's existing Herdr default session; never creates Herdr sessions or servers. action: start/list/status/read/prompt/keys/wait/interrupt/stop; host_id required. start needs cwd (kind defaults codex), others need agent_id except list. text submits a prompt; keys answers terminal dialogs. read returns a bounded snapshot. result + session_id polls Hub approval/execution; never blindly retry mutations. Requires Herdr and Python 3 on target.",
 		"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "openWorldHint": true},
 		"inputSchema": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action"}, "properties": map[string]any{
 			"action":          map[string]any{"type": "string", "enum": []string{"start", "list", "status", "read", "prompt", "keys", "wait", "interrupt", "stop", "result"}},
@@ -201,12 +201,12 @@ func (a *App) callAgentTool(raw json.RawMessage, ctx context.Context) (any, *jso
 	return agentToolResult(record), nil
 }
 
-// Stable across Hub restarts; distinct for each Hub, client and host. This is
-// tool-level ownership, not a sandbox against the remote Unix account itself.
-func (a *App) agentNamespace(clientID, hostID string) string {
+// Stable per Hub and host across restarts. All clients use the same Herdr
+// default session, so serialize workspace creation for the whole host.
+func (a *App) agentStartLockID(hostID string) string {
 	mac := hmac.New(sha256.New, a.store.key)
-	_, _ = fmt.Fprintf(mac, "ssh-hub-agent\x00%s\x00%s", clientID, hostID)
-	return "hub-" + hex.EncodeToString(mac.Sum(nil)[:12])
+	_, _ = fmt.Fprintf(mac, "ssh-hub-agent-start\x00%s", hostID)
+	return "host-" + hex.EncodeToString(mac.Sum(nil)[:12])
 }
 
 func (a *App) runAgentOperation(ctx context.Context, host Host, key StoredKey, record *AuditSession) (string, int, error) {
@@ -227,7 +227,7 @@ func (a *App) runAgentOperation(ctx context.Context, host Host, key StoredKey, r
 	if timeout < 5 {
 		return "", -1, errors.New("ssh_agent requires host command timeout of at least 5 seconds")
 	}
-	payload, _ := json.Marshal(map[string]any{"request": req, "namespace": a.agentNamespace(record.ClientID, host.ID), "budget": timeout - 2})
+	payload, _ := json.Marshal(map[string]any{"request": req, "lock_id": a.agentStartLockID(host.ID), "budget": timeout - 2})
 	command := "python3 -c " + shellQuote(agentRemoteScript) + " " + shellQuote(string(payload))
 	output, code, err := a.runSSHCommand(ctx, host, key, command, timeout, record)
 	if err == nil && code == 0 {

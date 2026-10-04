@@ -27,9 +27,21 @@ func migrateClientPolicies(store *Store) error {
 		}
 		sort.Strings(ids)
 		for id, client := range state.Clients {
+			changed := false
 			if !client.HostAccessConfigured {
 				client.HostAccessConfigured, client.RequireApproval = true, true
 				client.AllowedHostIDs = append([]string{}, ids...)
+				changed = true
+			}
+			if !client.FeatureAccessConfigured {
+				client.FeatureAccessConfigured = true
+				client.HostFeatures = make(map[string][]string, len(client.AllowedHostIDs))
+				for _, hostID := range client.AllowedHostIDs {
+					client.HostFeatures[hostID] = []string{"exec", "shell", "agent"}
+				}
+				changed = true
+			}
+			if changed {
 				state.Clients[id] = client
 			}
 		}
@@ -43,6 +55,20 @@ func clientIDFromContext(ctx context.Context) string {
 }
 func clientAllowsHost(client OAuthClient, hostID string) bool {
 	return client.HostAccessConfigured && hasValue(client.AllowedHostIDs, hostID)
+}
+
+func clientAllowsFeature(client OAuthClient, hostID, feature string) bool {
+	if !clientAllowsHost(client, hostID) {
+		return false
+	}
+	if !client.FeatureAccessConfigured {
+		return true // Existing in-memory/legacy clients retain their host grants.
+	}
+	return hasValue(client.HostFeatures[hostID], feature)
+}
+
+func clientHasAnyFeature(client OAuthClient, hostID string) bool {
+	return clientAllowsFeature(client, hostID, "exec") || clientAllowsFeature(client, hostID, "shell") || clientAllowsFeature(client, hostID, "agent")
 }
 
 type AuditSession struct {
@@ -162,7 +188,7 @@ func (a *App) recoverAuditSessions() error {
 	return nil
 }
 
-func (a *App) resolveExecution(clientID, hostID string) (OAuthClient, Host, StoredKey, error) {
+func (a *App) resolveExecution(clientID, hostID, feature string) (OAuthClient, Host, StoredKey, error) {
 	var client OAuthClient
 	var host Host
 	var key StoredKey
@@ -171,6 +197,9 @@ func (a *App) resolveExecution(clientID, hostID string) (OAuthClient, Host, Stor
 		client, ok = state.Clients[clientID]
 		if !ok || !clientAllowsHost(client, hostID) {
 			return errors.New("client is not allowed to access this host")
+		}
+		if !clientAllowsFeature(client, hostID, feature) {
+			return fmt.Errorf("client is not allowed to use %s on this host", feature)
 		}
 		host, ok = state.Hosts[hostID]
 		if !ok {
@@ -215,7 +244,8 @@ func (a *App) submitOperation(ctx context.Context, hostID, command string, timeo
 	}
 	now := time.Now().UTC()
 	record := AuditSession{Operation: operation, ConnectionID: connectionID, ID: id, ClientID: clientIDFromContext(ctx), HostID: hostID, Command: command, TimeoutSeconds: timeout, CreatedAt: now, ExitCode: -1}
-	client, host, _, accessErr := a.resolveExecution(record.ClientID, hostID)
+	feature := operationFeature(operation, connectionID)
+	client, host, _, accessErr := a.resolveExecution(record.ClientID, hostID, feature)
 	record.ClientName = client.Name
 	if accessErr != nil {
 		record.Status, record.Error, record.FinishedAt = "denied", accessErr.Error(), now
@@ -240,8 +270,19 @@ func (a *App) submitOperation(ctx context.Context, hostID, command string, timeo
 	return record, nil
 }
 
+func operationFeature(operation, connectionID string) string {
+	switch {
+	case operation == "agent":
+		return "agent"
+	case operation == "open" || connectionID != "":
+		return "shell"
+	default:
+		return "exec"
+	}
+}
+
 func (a *App) executeAudited(ctx context.Context, record AuditSession) AuditSession {
-	_, host, key, err := a.resolveExecution(record.ClientID, record.HostID)
+	_, host, key, err := a.resolveExecution(record.ClientID, record.HostID, operationFeature(record.Operation, record.ConnectionID))
 	if err == nil && host != record.Host {
 		err = errors.New("host configuration changed; submit a new request")
 	}
@@ -306,9 +347,18 @@ func auditToolResult(record AuditSession) map[string]any {
 
 func (a *App) clientAudit(ctx context.Context, id string) (AuditSession, error) {
 	a.auditMu.Lock()
-	defer a.auditMu.Unlock()
 	record, err := a.readAuditLocked(id)
 	if err != nil || record.ClientID != clientIDFromContext(ctx) {
+		a.auditMu.Unlock()
+		return AuditSession{}, errors.New("session not found")
+	}
+	a.auditMu.Unlock()
+	var allowed bool
+	_ = a.store.view(func(state State) error {
+		allowed = clientAllowsFeature(state.Clients[record.ClientID], record.HostID, operationFeature(record.Operation, record.ConnectionID))
+		return nil
+	})
+	if !allowed {
 		return AuditSession{}, errors.New("session not found")
 	}
 	return record, nil
@@ -320,8 +370,9 @@ func (a *App) handleClientPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	var input struct {
-		AllowedHostIDs  []string `json:"allowedHostIds"`
-		RequireApproval bool     `json:"requireApproval"`
+		AllowedHostIDs  []string            `json:"allowedHostIds"`
+		HostFeatures    map[string][]string `json:"hostFeatures"`
+		RequireApproval bool                `json:"requireApproval"`
 	}
 	if decodeJSON(r, &input) != nil {
 		writeJSON(w, 400, map[string]string{"error": "无效的权限设置"})
@@ -332,12 +383,32 @@ func (a *App) handleClientPolicy(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return errors.New("客户端不存在")
 		}
-		for _, id := range input.AllowedHostIDs {
+		features := input.HostFeatures
+		if features == nil { // Accept older consoles/API clients; preserve their grants.
+			features = make(map[string][]string, len(input.AllowedHostIDs))
+			for _, id := range input.AllowedHostIDs {
+				features[id] = []string{"exec", "shell", "agent"}
+			}
+		}
+		allowed := make([]string, 0, len(features))
+		for id, selected := range features {
 			if _, ok := state.Hosts[id]; !ok {
 				return errors.New("机器不存在")
 			}
+			seen := map[string]bool{}
+			for _, feature := range selected {
+				if feature != "exec" && feature != "shell" && feature != "agent" || seen[feature] {
+					return errors.New("无效的功能权限")
+				}
+				seen[feature] = true
+			}
+			if len(selected) > 0 {
+				allowed = append(allowed, id)
+			}
 		}
-		client.HostAccessConfigured, client.AllowedHostIDs, client.RequireApproval = true, input.AllowedHostIDs, input.RequireApproval
+		sort.Strings(allowed)
+		client.HostAccessConfigured, client.AllowedHostIDs, client.RequireApproval = true, allowed, input.RequireApproval
+		client.FeatureAccessConfigured, client.HostFeatures = true, features
 		state.Clients[client.ID] = client
 		return nil
 	})
@@ -406,7 +477,7 @@ func (a *App) decideAudit(id, decision, actor string) (AuditSession, error) {
 	if decision == "deny" {
 		record.Status, record.FinishedAt = "rejected", record.DecidedAt
 	} else {
-		_, host, _, err := a.resolveExecution(record.ClientID, record.HostID)
+		_, host, _, err := a.resolveExecution(record.ClientID, record.HostID, operationFeature(record.Operation, record.ConnectionID))
 		if err != nil || host != record.Host {
 			record.Status, record.Error, record.FinishedAt = "denied", "Permissions or host configuration changed; no connection was made", record.DecidedAt
 		} else {

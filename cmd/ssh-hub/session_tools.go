@@ -80,6 +80,9 @@ func (a *App) callPersistentTool(name string, raw json.RawMessage, ctx context.C
 		if err != nil {
 			return connectionToolResult(nil, err), nil
 		}
+		if _, _, _, err := a.resolveExecution(client, p.snapshot().HostID, "shell"); err != nil {
+			return connectionToolResult(nil, err), nil
+		}
 		if name == "ssh_check_session" {
 			return connectionToolResult(a.checkConnection(ctx, p), nil), nil
 		}
@@ -90,6 +93,8 @@ func (a *App) callPersistentTool(name string, raw json.RawMessage, ctx context.C
 	}
 }
 func (a *App) clientAuditList(client, before, connection, status string) ([]AuditSession, string, error) {
+	var policy OAuthClient
+	_ = a.store.view(func(state State) error { policy = state.Clients[client]; return nil })
 	a.auditMu.Lock()
 	defer a.auditMu.Unlock()
 	records := []AuditSession{}
@@ -108,6 +113,9 @@ func (a *App) clientAuditList(client, before, connection, status string) ([]Audi
 	}
 	for _, record := range all {
 		if record.ClientID != client || (connection != "" && record.ConnectionID != connection) || (status != "" && record.Status != status) {
+			continue
+		}
+		if !clientAllowsFeature(policy, record.HostID, operationFeature(record.Operation, record.ConnectionID)) {
 			continue
 		}
 		if len(records) == 50 {
@@ -131,6 +139,7 @@ func (a *App) readTranscript(client, id string, offset int64) (map[string]any, e
 	a.auditMu.Lock()
 	entries, err := os.ReadDir(a.auditDir())
 	owned := false
+	ownedHost := ""
 	if err == nil {
 		for _, e := range entries {
 			auditID := strings.TrimSuffix(e.Name(), ".json")
@@ -140,6 +149,7 @@ func (a *App) readTranscript(client, id string, offset int64) (map[string]any, e
 			r, e := a.readAuditLocked(auditID)
 			if e == nil && r.ConnectionID == id && r.Operation == "open" && (client == "" || r.ClientID == client) {
 				owned = true
+				ownedHost = r.HostID
 				break
 			}
 		}
@@ -147,6 +157,11 @@ func (a *App) readTranscript(client, id string, offset int64) (map[string]any, e
 	a.auditMu.Unlock()
 	if !owned {
 		return nil, errors.New("persistent session not found")
+	}
+	if client != "" {
+		if _, _, _, err := a.resolveExecution(client, ownedHost, "shell"); err != nil {
+			return nil, errors.New("persistent session not found")
+		}
 	}
 	f, err := os.Open(filepath.Join(filepath.Dir(a.store.path), "transcripts", id+".jsonl"))
 	if err != nil {

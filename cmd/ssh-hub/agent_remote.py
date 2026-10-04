@@ -1,8 +1,4 @@
-"""Executed over SSH with a JSON argument; requires Python 3.6+ and Herdr.
-
-No user input is evaluated as shell code. Herdr owns agent PTYs independently
-of this short-lived controller. Each Hub/client/host uses a named session.
-"""
+"""Control agents in the target user's existing Herdr default session."""
 import fcntl
 import json
 import os
@@ -13,11 +9,11 @@ import time
 
 payload = json.loads(sys.argv[1])
 request = payload["request"]
-namespace = payload["namespace"]
+lock_id = payload["lock_id"]
 deadline = time.monotonic() + payload["budget"]
 action = request["action"]
 agent_id = request.get("agent_id", "")
-result = {"herdr_session": namespace}
+result = {}
 # Noninteractive SSH often omits the usual user-local executable directories.
 os.environ["PATH"] = os.pathsep.join([
     os.path.expanduser("~/.local/bin"), os.path.expanduser("~/.cargo/bin"),
@@ -42,7 +38,7 @@ def remaining():
 
 
 def cli(args, raw=False):
-    completed = subprocess.run([herdr, "--session", namespace] + args,
+    completed = subprocess.run([herdr] + args,
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, universal_newlines=True,
                                encoding="utf-8", errors="replace", timeout=remaining())
@@ -85,7 +81,7 @@ def acquire_start_lock():
     state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
     directory = os.path.join(state, "ssh-hub", "locks")
     os.makedirs(directory, mode=0o700, exist_ok=True)
-    lock = open(os.path.join(directory, namespace + ".lock"), "a")
+    lock = open(os.path.join(directory, lock_id + ".lock"), "a")
     os.chmod(lock.name, 0o600)
     while True:
         try:
@@ -93,29 +89,6 @@ def acquire_start_lock():
             return lock
         except BlockingIOError:
             time.sleep(min(0.1, remaining()))
-
-
-def ensure_server():
-    try:
-        cli(["agent", "list"])
-        return
-    except Failure:
-        pass
-    # Never restart or stop an existing daemon. A duplicate server exits on its
-    # own lock. Missing binaries/unsupported protocols still fail visibly.
-    subprocess.Popen([herdr, "--session", namespace, "server"],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True,
-                     close_fds=True)
-    last_error = ""
-    for _ in range(30):
-        time.sleep(min(0.1, remaining()))
-        try:
-            cli(["agent", "list"])
-            return
-        except Failure as exc:
-            last_error = str(exc)
-    raise Failure("server_unavailable", "Could not start the isolated Herdr server: " + last_error)
 
 
 def main():
@@ -129,7 +102,10 @@ def main():
         if not shutil.which(kind):
             raise Failure("missing_dependency", "Install and authenticate the %s CLI for this SSH user." % kind)
         with acquire_start_lock():
-            ensure_server()
+            try:
+                cli(["agent", "list"])
+            except Failure as exc:
+                raise Failure("default_session_unavailable", "Start the existing Herdr default session on the target first; SSH Hub will not create a Herdr session. " + str(exc))
             # A caller-specified name can recover a timed-out launch. Never
             # create a second workspace or resubmit a prompt with that name.
             existing = cli(["workspace", "list"])["workspaces"]

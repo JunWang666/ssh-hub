@@ -96,13 +96,13 @@ func TestAgentApprovalIsolationAndRestart(t *testing.T) {
 	if !isErr || denied["status"] != "denied" || connections.Load() != 0 {
 		t.Fatal(denied)
 	}
-	// Namespace survives Hub restart and differs across hosts, clients and Hubs.
+	// Start lock survives Hub restart, differs across hosts and Hubs.
 	restarted := newApp(a.store, a.publicURL)
-	if a.agentNamespace("c1", h.ID) != restarted.agentNamespace("c1", h.ID) {
-		t.Fatal("namespace changed on restart")
+	if a.agentStartLockID(h.ID) != restarted.agentStartLockID(h.ID) {
+		t.Fatal("start lock changed on restart")
 	}
-	if a.agentNamespace("c1", h.ID) == a.agentNamespace("c2", h.ID) || a.agentNamespace("c1", h.ID) == a.agentNamespace("c1", "other") || a.agentNamespace("c1", h.ID) == featureApp(t).agentNamespace("c1", h.ID) {
-		t.Fatal("namespace collision")
+	if a.agentStartLockID(h.ID) == a.agentStartLockID("other") || a.agentStartLockID(h.ID) == featureApp(t).agentStartLockID(h.ID) {
+		t.Fatal("start lock collision")
 	}
 	// Revocation after submission must prevent approved execution too.
 	_ = a.store.update(func(s *State) error { c := s.Clients["c1"]; c.AllowedHostIDs = nil; s.Clients["c1"] = c; return nil })
@@ -247,8 +247,27 @@ for line in sys.stdin:
 	})
 	h, _, active := attachJump(t, a, h)
 	ctx := context.WithValue(context.Background(), clientContextKey{}, "owner")
+	server := exec.Command(binary, "server")
+	server.Env = env
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = server.Wait() }()
+	ready := false
+	for i := 0; i < 50; i++ {
+		cmd := exec.Command(binary, "agent", "list")
+		cmd.Env = env
+		if cmd.Run() == nil {
+			ready = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatal("default Herdr server did not become ready")
+	}
 	t.Cleanup(func() {
-		cmd := exec.Command(binary, "--session", a.agentNamespace("owner", h.ID), "server", "stop")
+		cmd := exec.Command(binary, "server", "stop")
 		cmd.Env = env
 		_ = cmd.Run()
 	})

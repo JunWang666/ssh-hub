@@ -36,6 +36,7 @@ type publicKey struct {
 }
 
 type publicHost struct {
+	AvailableFeatures  []string  `json:"availableFeatures,omitempty"`
 	JumpHostID         string    `json:"jumpHostId,omitempty"`
 	ID                 string    `json:"id"`
 	Name               string    `json:"name"`
@@ -49,13 +50,15 @@ type publicHost struct {
 }
 
 type publicClient struct {
-	HostAccessConfigured bool      `json:"hostAccessConfigured"`
-	AllowedHostIDs       []string  `json:"allowedHostIds"`
-	RequireApproval      bool      `json:"requireApproval"`
-	ID                   string    `json:"id"`
-	Name                 string    `json:"name"`
-	RedirectURIs         []string  `json:"redirectURIs"`
-	CreatedAt            time.Time `json:"createdAt"`
+	HostAccessConfigured    bool                `json:"hostAccessConfigured"`
+	AllowedHostIDs          []string            `json:"allowedHostIds"`
+	FeatureAccessConfigured bool                `json:"featureAccessConfigured"`
+	HostFeatures            map[string][]string `json:"hostFeatures"`
+	RequireApproval         bool                `json:"requireApproval"`
+	ID                      string              `json:"id"`
+	Name                    string              `json:"name"`
+	RedirectURIs            []string            `json:"redirectURIs"`
+	CreatedAt               time.Time           `json:"createdAt"`
 }
 
 func (a *App) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +81,7 @@ func (a *App) handleOverview(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		for _, client := range state.Clients {
-			clients = append(clients, publicClient{HostAccessConfigured: client.HostAccessConfigured, AllowedHostIDs: client.AllowedHostIDs, RequireApproval: client.RequireApproval, ID: client.ID, Name: client.Name, RedirectURIs: client.RedirectURIs, CreatedAt: client.CreatedAt})
+			clients = append(clients, publicClient{HostAccessConfigured: client.HostAccessConfigured, AllowedHostIDs: client.AllowedHostIDs, FeatureAccessConfigured: client.FeatureAccessConfigured, HostFeatures: client.HostFeatures, RequireApproval: client.RequireApproval, ID: client.ID, Name: client.Name, RedirectURIs: client.RedirectURIs, CreatedAt: client.CreatedAt})
 		}
 		return nil
 	})

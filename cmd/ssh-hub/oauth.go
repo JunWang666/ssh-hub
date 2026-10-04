@@ -108,7 +108,7 @@ func (a *App) handleRegistration(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusInternalServerError, "server_error", "could not create client")
 		return
 	}
-	client := OAuthClient{DeviceEnabled: hasValue(request.GrantTypes, deviceGrantType), HostAccessConfigured: true, RequireApproval: true, ID: clientID, Name: request.ClientName, RedirectURIs: request.RedirectURIs, RefreshEnabled: hasValue(request.GrantTypes, "refresh_token"), CreatedAt: time.Now().UTC()}
+	client := OAuthClient{DeviceEnabled: hasValue(request.GrantTypes, deviceGrantType), HostAccessConfigured: true, FeatureAccessConfigured: true, HostFeatures: map[string][]string{}, RequireApproval: true, ID: clientID, Name: request.ClientName, RedirectURIs: request.RedirectURIs, RefreshEnabled: hasValue(request.GrantTypes, "refresh_token"), CreatedAt: time.Now().UTC()}
 	err = a.store.update(func(state *State) error {
 		if len(state.Clients) >= 2000 {
 			return fmt.Errorf("client registration limit reached")

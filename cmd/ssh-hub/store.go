@@ -56,15 +56,17 @@ type Host struct {
 }
 
 type OAuthClient struct {
-	DeviceEnabled        bool      `json:"device_enabled,omitempty"`
-	ID                   string    `json:"id"`
-	Name                 string    `json:"name"`
-	RedirectURIs         []string  `json:"redirect_uris"`
-	RefreshEnabled       bool      `json:"refresh_enabled,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	HostAccessConfigured bool      `json:"host_access_configured,omitempty"`
-	AllowedHostIDs       []string  `json:"allowed_host_ids,omitempty"`
-	RequireApproval      bool      `json:"require_approval,omitempty"`
+	DeviceEnabled           bool                `json:"device_enabled,omitempty"`
+	ID                      string              `json:"id"`
+	Name                    string              `json:"name"`
+	RedirectURIs            []string            `json:"redirect_uris"`
+	RefreshEnabled          bool                `json:"refresh_enabled,omitempty"`
+	CreatedAt               time.Time           `json:"created_at"`
+	HostAccessConfigured    bool                `json:"host_access_configured,omitempty"`
+	AllowedHostIDs          []string            `json:"allowed_host_ids,omitempty"`
+	FeatureAccessConfigured bool                `json:"feature_access_configured,omitempty"`
+	HostFeatures            map[string][]string `json:"host_features,omitempty"`
+	RequireApproval         bool                `json:"require_approval,omitempty"`
 }
 
 type AuthCode struct {
