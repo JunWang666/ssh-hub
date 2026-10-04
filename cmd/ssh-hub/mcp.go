@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -177,7 +178,7 @@ func (a *App) dispatchMCP(method string, params json.RawMessage, ctx context.Con
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]string{"name": "ssh-hub", "version": "0.3.0"},
-			"instructions":    "Use ssh_list_hosts to see permitted hosts. Use ssh_open_session then ssh_exec with connection_id for a persistent shell. ssh_audit_list and ssh_audit_read expose only your audit records. ssh_exec may return a pending approval session; use ssh_session_status to poll it instead of resubmitting the command.",
+			"instructions":    "IDs are typed references: host-N for hosts, shell-N for persistent shells (connection_id), run-N for executions (session_id), agent-N for agents. Legacy IDs remain valid. host_id also accepts a unique host name. Use ssh_agent for remote coding-agent control (all actions in one tool). Use ssh_list_hosts to see permitted hosts. Use ssh_open_session then ssh_exec with connection_id for a persistent shell. ssh_audit_list and ssh_audit_read expose only your audit records. ssh_exec may return a pending approval session; use ssh_session_status to poll it instead of resubmitting the command.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -207,7 +208,7 @@ func supportedProtocolVersion(version string) string {
 }
 
 func toolDefinitions() []map[string]any {
-	return append(persistentTools(), []map[string]any{
+	return append(append(persistentTools(), agentTool()), []map[string]any{
 		{"name": "ssh_session_status", "description": "Read your SSH session status and recorded output. After admin approval, poll a pending session here; do not resubmit ssh_exec.", "annotations": map[string]any{"readOnlyHint": true}, "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"session_id": map[string]any{"type": "string"}}, "required": []string{"session_id"}, "additionalProperties": false}},
 		{
 			"name":        "ssh_list_hosts",
@@ -218,16 +219,16 @@ func toolDefinitions() []map[string]any {
 		{
 			"name":        "ssh_exec",
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "openWorldHint": true},
-			"description": "Run a shell command on an allowed SSH host. If approval is required, returns a pending session ID without connecting; poll ssh_session_status after administrator approval. Supply connection_id from ssh_open_session to preserve shell state across commands; omit it for an independent execution.",
+			"description": "Run a shell command on an allowed SSH host. If approval is required, returns a pending session ID without connecting; poll ssh_session_status after administrator approval. Supply connection_id from ssh_open_session to preserve shell state; host_id can then be omitted. Otherwise host_id is required for independent execution.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"connection_id":   map[string]any{"type": "string", "description": "Optional persistent shell ID from ssh_open_session."},
-					"host_id":         map[string]any{"type": "string", "description": "Host id returned by ssh_list_hosts."},
+					"host_id":         map[string]any{"type": "string", "description": "Host ID or unique name from ssh_list_hosts; optional with connection_id."},
 					"command":         map[string]any{"type": "string", "description": "Remote shell command to run."},
 					"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 300, "description": "Optional timeout, capped by the host setting."},
 				},
-				"required":             []string{"host_id", "command"},
+				"required":             []string{"command"},
 				"additionalProperties": false,
 			},
 		},
@@ -243,6 +244,8 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 		return nil, &jsonRPCError{Code: -32602, Message: "Invalid params: name is required"}
 	}
 	switch input.Name {
+	case "ssh_agent":
+		return a.callAgentTool(input.Arguments, ctx)
 	case "ssh_list_hosts":
 		var hosts []publicHost
 		_ = a.store.view(func(state State) error {
@@ -266,6 +269,12 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 		if hosts == nil {
 			hosts = []publicHost{}
 		}
+		sort.Slice(hosts, func(i, j int) bool {
+			if hosts[i].Name == hosts[j].Name {
+				return hosts[i].ID < hosts[j].ID
+			}
+			return hosts[i].Name < hosts[j].Name
+		})
 		return map[string]any{"content": []map[string]string{{"type": "text", "text": formatHostList(hosts)}}, "structuredContent": map[string]any{"hosts": hosts}}, nil
 	case "ssh_session_status":
 		var args struct {
@@ -288,8 +297,24 @@ func (a *App) callTool(params json.RawMessage, ctx context.Context) (any, *jsonR
 			Command        string `json:"command"`
 			TimeoutSeconds int    `json:"timeout_seconds"`
 		}
-		if err := json.Unmarshal(input.Arguments, &args); err != nil || args.HostID == "" || strings.TrimSpace(args.Command) == "" || len(args.Command) > maxCommandBytes {
-			return nil, &jsonRPCError{Code: -32602, Message: "Invalid params: host_id and command are required; command must be at most 16 KiB"}
+		if err := json.Unmarshal(input.Arguments, &args); err != nil || (args.HostID == "" && args.ConnectionID == "") || strings.TrimSpace(args.Command) == "" || len(args.Command) > maxCommandBytes {
+			return nil, &jsonRPCError{Code: -32602, Message: "Invalid params: command and either host_id or connection_id are required; command must be at most 16 KiB"}
+		}
+		if args.HostID != "" {
+			hostID, err := a.resolveHostReference(ctx, args.HostID)
+			if err != nil {
+				return connectionToolResult(nil, err), nil
+			}
+			args.HostID = hostID
+		} else {
+			if clientIDFromContext(ctx) == "" {
+				return connectionToolResult(nil, errors.New("client authentication required")), nil
+			}
+			p, err := a.connection(clientIDFromContext(ctx), args.ConnectionID)
+			if err != nil {
+				return connectionToolResult(nil, err), nil
+			}
+			args.HostID = p.snapshot().HostID
 		}
 		record, err := a.submitOperation(ctx, args.HostID, args.Command, args.TimeoutSeconds, "exec", args.ConnectionID)
 		if record.ID != "" {
@@ -369,7 +394,7 @@ func (a *App) runSSHCommand(parent context.Context, host Host, key StoredKey, co
 	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
 	defer cancel()
-	connection, err := (&net.Dialer{Timeout: time.Duration(timeout) * time.Second}).DialContext(ctx, "tcp", host.Address)
+	connection, err := a.dialHostTransport(ctx, host)
 	if err != nil {
 		return "", 0, fmt.Errorf("connect to %s: %w", host.Address, err)
 	}

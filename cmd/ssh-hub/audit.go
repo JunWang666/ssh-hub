@@ -70,7 +70,7 @@ type AuditSession struct {
 	Error          string    `json:"error,omitempty"`
 }
 
-var auditIDPattern = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}_[A-Za-z0-9_-]{16}$`)
+var auditIDPattern = regexp.MustCompile(`^(run-[1-9][0-9]*|[0-9]{8}T[0-9]{6}_[A-Za-z0-9_-]{16})$`)
 
 func (a *App) auditDir() string { return filepath.Join(filepath.Dir(a.store.path), "audit") }
 
@@ -192,7 +192,7 @@ func (a *App) submitExecution(ctx context.Context, hostID, command string, timeo
 func (a *App) submitOperation(ctx context.Context, hostID, command string, timeout int, operation, connectionID string) (AuditSession, error) {
 	if operation == "open" {
 		var err error
-		connectionID, err = randomToken(24)
+		connectionID, err = a.store.resourceID("shell")
 		if err != nil {
 			return AuditSession{}, err
 		}
@@ -209,12 +209,12 @@ func (a *App) submitOperation(ctx context.Context, hostID, command string, timeo
 	if timeout < 0 || timeout > 300 {
 		return AuditSession{}, errors.New("timeout_seconds must be between 1 and 300 when specified")
 	}
-	id, err := randomToken(12)
+	id, err := a.store.resourceID("run")
 	if err != nil {
 		return AuditSession{}, err
 	}
 	now := time.Now().UTC()
-	record := AuditSession{Operation: operation, ConnectionID: connectionID, ID: now.Format("20060102T150405") + "_" + id, ClientID: clientIDFromContext(ctx), HostID: hostID, Command: command, TimeoutSeconds: timeout, CreatedAt: now, ExitCode: -1}
+	record := AuditSession{Operation: operation, ConnectionID: connectionID, ID: id, ClientID: clientIDFromContext(ctx), HostID: hostID, Command: command, TimeoutSeconds: timeout, CreatedAt: now, ExitCode: -1}
 	client, host, _, accessErr := a.resolveExecution(record.ClientID, hostID)
 	record.ClientName = client.Name
 	if accessErr != nil {
@@ -247,6 +247,8 @@ func (a *App) executeAudited(ctx context.Context, record AuditSession) AuditSess
 	}
 	if err == nil {
 		switch {
+		case record.Operation == "agent":
+			record.Output, record.ExitCode, err = a.runAgentOperation(ctx, host, key, &record)
 		case record.Operation == "open":
 			err = a.openPersistent(ctx, host, key, &record)
 			record.ExitCode = 0
@@ -292,7 +294,14 @@ func auditToolResult(record AuditSession) map[string]any {
 	if record.Error != "" {
 		text += "\n" + record.Error
 	}
-	return map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "structuredContent": map[string]any{"connection_id": record.ConnectionID, "operation": record.Operation, "session_id": record.ID, "status": record.Status, "exit_code": record.ExitCode, "output": record.Output, "stdout": record.Stdout, "stderr": record.Stderr, "error": record.Error}, "isError": record.Status != "completed" && record.Status != "pending" && record.Status != "running"}
+	structured := map[string]any{"connection_id": record.ConnectionID, "operation": record.Operation, "session_id": record.ID, "status": record.Status, "exit_code": record.ExitCode, "output": record.Output, "stdout": record.Stdout, "stderr": record.Stderr, "error": record.Error}
+	if record.Status == "pending" || record.Status == "running" {
+		next := map[string]any{"name": "ssh_session_status", "arguments": map[string]string{"session_id": record.ID}}
+		structured["next_call"] = next
+		encoded, _ := json.Marshal(next)
+		text += "\nnext_call: " + string(encoded)
+	}
+	return map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "structuredContent": structured, "isError": record.Status != "completed" && record.Status != "pending" && record.Status != "running"}
 }
 
 func (a *App) clientAudit(ctx context.Context, id string) (AuditSession, error) {
@@ -346,24 +355,13 @@ func (a *App) handleAuditList(w http.ResponseWriter, r *http.Request) {
 	}
 	a.auditMu.Lock()
 	defer a.auditMu.Unlock()
-	entries, err := os.ReadDir(a.auditDir())
-	if err != nil && !os.IsNotExist(err) {
-		writeJSON(w, 500, map[string]string{"error": "无法读取审计目录"})
+	all, err := a.sortedAuditsLocked(r.URL.Query().Get("before"))
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
 	records := []AuditSession{}
-	before := r.URL.Query().Get("before")
-	for _, entry := range entries {
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		if !strings.HasSuffix(entry.Name(), ".json") || before != "" && id >= before {
-			continue
-		}
-		record, err := a.readAuditLocked(id)
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "审计记录读取失败"})
-			return
-		}
+	for _, record := range all {
 		if status := r.URL.Query().Get("status"); status != "" && record.Status != status {
 			continue
 		}
@@ -440,4 +438,50 @@ func (a *App) handleAuditDecision(w http.ResponseWriter, r *http.Request) {
 		go a.executeAudited(context.Background(), record)
 	}
 	writeJSON(w, 200, record)
+}
+
+// Order by creation time, not filename: legacy and short IDs coexist. The ID
+// breaks ties so a cursor never skips records with the same timestamp.
+func (a *App) sortedAuditsLocked(before string) ([]AuditSession, error) {
+	var cursor AuditSession
+	if before != "" {
+		var err error
+		cursor, err = a.readAuditLocked(before)
+		if err != nil {
+			return nil, errors.New("invalid audit cursor")
+		}
+	}
+	entries, err := os.ReadDir(a.auditDir())
+	if os.IsNotExist(err) {
+		return []AuditSession{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	records := []AuditSession{}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		if !auditIDPattern.MatchString(id) {
+			continue
+		}
+		record, err := a.readAuditLocked(id)
+		if err != nil {
+			return nil, err
+		}
+		if before != "" && (record.CreatedAt.After(cursor.CreatedAt) || (record.CreatedAt.Equal(cursor.CreatedAt) && record.ID >= cursor.ID)) {
+			continue
+		}
+		record.Stdout, record.Stderr, record.Output = "", "", ""
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
+			return records[i].ID > records[j].ID
+		}
+		return records[i].CreatedAt.After(records[j].CreatedAt)
+	})
+	return records, nil
 }

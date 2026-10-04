@@ -36,6 +36,7 @@ type publicKey struct {
 }
 
 type publicHost struct {
+	JumpHostID         string    `json:"jumpHostId,omitempty"`
 	ID                 string    `json:"id"`
 	Name               string    `json:"name"`
 	Address            string    `json:"address"`
@@ -71,7 +72,7 @@ func (a *App) handleOverview(w http.ResponseWriter, r *http.Request) {
 		for _, host := range state.Hosts {
 			key := state.Keys[host.KeyID]
 			hosts = append(hosts, publicHost{
-				ID: host.ID, Name: host.Name, Address: host.Address, Username: host.Username,
+				JumpHostID: host.JumpHostID, ID: host.ID, Name: host.Name, Address: host.Address, Username: host.Username,
 				KeyID: host.KeyID, KeyName: key.Name, HostKeyFingerprint: host.HostKeyFingerprint,
 				TimeoutSeconds: host.TimeoutSeconds, CreatedAt: host.CreatedAt,
 			})
@@ -162,6 +163,7 @@ func (a *App) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 }
 
 type createHostRequest struct {
+	JumpHostID         string `json:"jumpHostId"`
 	Name               string `json:"name"`
 	Address            string `json:"address"`
 	Username           string `json:"username"`
@@ -203,19 +205,22 @@ func (a *App) handleCreateHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "命令超时必须在 1 到 300 秒之间"})
 		return
 	}
-	id, err := randomToken(9)
+	id, err := a.store.resourceID("host")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法创建主机记录"})
 		return
 	}
 	host := Host{
-		ID: id, Name: request.Name, Address: address, Username: request.Username,
+		JumpHostID: request.JumpHostID, ID: id, Name: request.Name, Address: address, Username: request.Username,
 		KeyID: request.KeyID, HostKeyFingerprint: request.HostKeyFingerprint,
 		TimeoutSeconds: request.TimeoutSeconds, CreatedAt: time.Now().UTC(),
 	}
 	if err := a.store.update(func(state *State) error {
 		if _, ok := state.Keys[host.KeyID]; !ok {
 			return errors.New("请选择一个已保存的 SSH 密钥")
+		}
+		if _, err := jumpRoute(*state, host); err != nil {
+			return err
 		}
 		state.Hosts[host.ID] = host
 		return nil
@@ -226,7 +231,7 @@ func (a *App) handleCreateHost(w http.ResponseWriter, r *http.Request) {
 	keyName := ""
 	_ = a.store.view(func(state State) error { keyName = state.Keys[host.KeyID].Name; return nil })
 	writeJSON(w, http.StatusCreated, publicHost{
-		ID: host.ID, Name: host.Name, Address: host.Address, Username: host.Username,
+		JumpHostID: host.JumpHostID, ID: host.ID, Name: host.Name, Address: host.Address, Username: host.Username,
 		KeyID: host.KeyID, KeyName: keyName, HostKeyFingerprint: host.HostKeyFingerprint,
 		TimeoutSeconds: host.TimeoutSeconds, CreatedAt: host.CreatedAt,
 	})
@@ -282,6 +287,11 @@ func (a *App) handleDeleteHost(w http.ResponseWriter, r *http.Request) {
 	err := a.store.update(func(state *State) error {
 		if _, ok := state.Hosts[r.PathValue("id")]; !ok {
 			return errors.New("主机不存在")
+		}
+		for _, host := range state.Hosts {
+			if host.JumpHostID == r.PathValue("id") {
+				return errors.New("此主机仍被用作跳板，请先删除依赖主机")
+			}
 		}
 		delete(state.Hosts, r.PathValue("id"))
 		return nil

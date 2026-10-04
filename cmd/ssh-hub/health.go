@@ -16,7 +16,7 @@ type HostHealth struct {
 
 func (a *App) checkHost(ctx context.Context, host Host) HostHealth {
 	start := time.Now()
-	fingerprint, _, err := probeHost(ctx, host.Address)
+	fingerprint, _, err := a.probeHost(ctx, host)
 	h := HostHealth{Status: "online", CheckedAt: time.Now().UTC(), LatencyMS: time.Since(start).Milliseconds()}
 	if err != nil {
 		h.Status = "offline"

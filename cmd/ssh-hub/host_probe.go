@@ -12,9 +12,17 @@ import (
 
 // Stop at host-key verification, before attempting user authentication.
 func probeHost(ctx context.Context, address string) (string, string, error) {
+	return probeHostWithDial(ctx, address, func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", address) })
+}
+
+func (a *App) probeHost(ctx context.Context, host Host) (string, string, error) {
+	return probeHostWithDial(ctx, host.Address, func(ctx context.Context) (net.Conn, error) { return a.dialHostTransport(ctx, host) })
+}
+
+func probeHostWithDial(ctx context.Context, address string, dial func(context.Context) (net.Conn, error)) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	connection, err := dial(ctx)
 	if err != nil {
 		return "", "", err
 	}
@@ -43,7 +51,8 @@ func (a *App) handleProbeHost(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var input struct {
-		Address string `json:"address"`
+		Address    string `json:"address"`
+		JumpHostID string `json:"jumpHostId"`
 	}
 	if decodeJSON(r, &input) != nil {
 		writeJSON(w, 400, map[string]string{"error": "地址无效"})
@@ -54,7 +63,7 @@ func (a *App) handleProbeHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "地址无效"})
 		return
 	}
-	fingerprint, algorithm, err := probeHost(r.Context(), address)
+	fingerprint, algorithm, err := a.probeHost(r.Context(), Host{Address: address, JumpHostID: input.JumpHostID})
 	if err != nil {
 		writeJSON(w, 502, map[string]string{"error": "无法获取主机指纹: " + err.Error()})
 		return

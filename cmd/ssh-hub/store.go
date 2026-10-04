@@ -21,14 +21,15 @@ import (
 )
 
 type State struct {
-	DeviceGrants  map[string]DeviceGrant  `json:"device_grants,omitempty"`
-	PasswordHash  string                  `json:"password_hash,omitempty"`
-	Hosts         map[string]Host         `json:"hosts"`
-	Keys          map[string]StoredKey    `json:"keys"`
-	Clients       map[string]OAuthClient  `json:"clients"`
-	Codes         map[string]AuthCode     `json:"codes"`
-	Tokens        map[string]AccessToken  `json:"tokens"`
-	RefreshTokens map[string]RefreshToken `json:"refresh_tokens"`
+	ResourceCounters map[string]uint64       `json:"resource_counters,omitempty"`
+	DeviceGrants     map[string]DeviceGrant  `json:"device_grants,omitempty"`
+	PasswordHash     string                  `json:"password_hash,omitempty"`
+	Hosts            map[string]Host         `json:"hosts"`
+	Keys             map[string]StoredKey    `json:"keys"`
+	Clients          map[string]OAuthClient  `json:"clients"`
+	Codes            map[string]AuthCode     `json:"codes"`
+	Tokens           map[string]AccessToken  `json:"tokens"`
+	RefreshTokens    map[string]RefreshToken `json:"refresh_tokens"`
 }
 
 type StoredKey struct {
@@ -43,6 +44,7 @@ type StoredKey struct {
 }
 
 type Host struct {
+	JumpHostID         string    `json:"jump_host_id,omitempty"`
 	ID                 string    `json:"id"`
 	Name               string    `json:"name"`
 	Address            string    `json:"address"`

@@ -47,6 +47,7 @@ https://your-host.example/mcp
 - `ssh_list_hosts`：列出管理员配置的 SSH 主机。
 - `ssh_exec`：按客户端机器权限和审批策略执行 Shell 命令，保存会话审计。
 - `ssh_session_status`：查询当前客户端自己的执行会话和结果。
+- `ssh_agent`：通过单个工具管理远端 Herdr 中的 Coding Agent；用 `action` 选择启动、监控、交互和停止。
 
 ## 配置 SSH 访问
 
@@ -64,7 +65,17 @@ curl -fsSL 'https://your-host.example/install/<random-token>' | sh
 
 此链接只提供公钥安装脚本；另有 `/public-keys/<random-token>` 可下载纯公钥。脚本追加公钥到当前用户的 `~/.ssh/authorized_keys`，保留已有条目和相同公钥的限制，不重复添加，并设置目录 `0700`、文件 `0600`。最后输出服务器主机指纹。链接可以重复使用，删除密钥记录后失效；已安装在远程机器上的公钥需要在远程机器移除。
 
-填写机器地址和 SSH 用户，在管理台点击 **连接并获取指纹**。探测会在取得服务器主机公钥后停止，不进行用户认证。核对所显示的 SHA256 指纹后，点击“确认指纹并添加主机”。也可直接填写通过其他可信方式核对过的指纹。之后连接必须匹配保存的指纹。
+填写机器地址和 SSH 用户，在管理台点击 **连接并获取指纹**。探测会在取得目标服务器主机公钥后停止，不进行目标机用户认证；配置跳板时，会先使用保存的密钥登录跳板机。核对所显示的 SHA256 指纹后，点击“确认指纹并添加主机”。也可直接填写通过其他可信方式核对过的指纹。之后连接必须匹配保存的指纹。
+
+### SSH 跳板机
+
+先把跳板机作为普通 SSH 主机添加并确认指纹，再添加内网目标主机，在“跳板机（可选）”中选择它。目标地址填写跳板机能够访问的内网 IP 或域名，用户名、密钥和指纹填写目标机自己的配置。点击“连接并获取指纹”会通过跳板获取目标机指纹。主机列表和详情会显示所选跳板。
+
+跳板机的 SSH 服务需要允许 `direct-tcpip` 转发（例如 `AllowTcpForwarding yes`，并确保 `PermitOpen` 允许目标地址和端口）。域名由对应跳板端解析。私钥始终留在 SSH Hub，不需要复制到跳板机，也不使用 SSH agent forwarding。
+
+单次命令、持久 shell、指纹探测和自动健康检查都使用同一路径，逐级校验已保存的跳板指纹。支持最多 8 层跳板；新增主机时拒绝无效引用和循环路径。正在被其他主机引用的跳板不能删除，需要先删除依赖主机。未选择跳板时保持直接连接，已有配置无需迁移。
+
+客户端只需获得目标主机的权限；通过跳板转发不会授予在跳板上执行命令的权限。API 创建主机和获取指纹时，可传入可选字段 `jumpHostId`，值为已保存的跳板主机 ID。
 
 Docker Compose 默认挂载一个空的只读密钥卷。使用宿主机目录时在 `.env` 设置：
 
@@ -164,7 +175,7 @@ OAuth 授权、设备码申请、令牌兑换和刷新均可省略 `resource` �
 Agent 使用流程：
 
 1. `ssh_open_session({"host_id":"..."})` 请求打开一个持久 shell。需要审批时返回 `session_id`，用 `ssh_session_status` 等待批准及连接完成。
-2. 成功结果包含 `connection_id`，随后调用 `ssh_exec({"host_id":"...","connection_id":"...","command":"cd /srv; export APP_ENV=production"})`。
+2. 成功结果包含 `connection_id`，随后调用 `ssh_exec({"connection_id":"shell-1","command":"cd /srv; export APP_ENV=production"})`。
 3. 后续 `ssh_exec` 使用同一个 `connection_id`，保留目录、shell 变量、环境变量和后台任务。每条命令仍独立审批、审计，同一会话同时只执行一条命令。
 4. `ssh_list_sessions` 列出自己的会话，`ssh_check_session` 立即探测现有连接，`ssh_close_session` 关闭会话。
 5. `ssh_audit_list` 分页读取自己的审计概要（每页 50 条，传回 `next_before` 作为 `before`）；可按 `connection_id`、`status` 过滤。`ssh_audit_read({"session_id":"..."})` 读取完整命令、审批、输出和退出码。
@@ -174,7 +185,7 @@ Agent 使用流程：
 
 会话跨 MCP 请求保持，但**不跨 SSH 断线或 SSH Hub 容器重启**；不会自动重连或重放命令。现有 SSH 连接每 30 秒发送 keepalive，5 秒未收到响应则关闭。默认空闲 24 小时关闭，可用 `SSHHUB_SESSION_IDLE_TIMEOUT=2h` 修改，`0` 禁用空闲关闭；后台输出不重置命令空闲计时。权限撤销、删除机器会关闭对应会话。最多保留 128 个活动会话。每会话 transcript 最多 16 MiB，达到上限会关闭会话；单条命令 stdout/stderr 各最多保存 512 KiB。记录存放于 `/data/audit` 和 `/data/transcripts`，文件权限 `0600`，不自动清理。
 
-主机每 60 秒自动检查 SSH 握手和已确认的指纹，不使用私钥登录。状态包括 `online`、`offline`、`fingerprint_changed`；`online` 不代表 SSH 用户认证必定成功。首次探测前及服务重启后状态为未知。手动接口仅在管理域名提供，要求管理员登录；POST/DELETE 同时要求 `X-CSRF-Token`：
+主机每 60 秒自动检查 SSH 握手和已确认的指纹，不登录目标机；配置跳板时，需要使用跳板机密钥认证以建立转发。状态包括 `online`、`offline`、`fingerprint_changed`；`online` 不代表 SSH 用户认证必定成功。首次探测前及服务重启后状态为未知。手动接口仅在管理域名提供，要求管理员登录；POST/DELETE 同时要求 `X-CSRF-Token`：
 
 | 接口 | 用途 |
 | --- | --- |
@@ -186,3 +197,75 @@ Agent 使用流程：
 | `POST /api/connections/{id}/check` | 立即探测现有会话，不重连 |
 | `DELETE /api/connections/{id}` | 关闭会话 |
 | `GET /api/connections/{id}/transcript?offset=0` | 分页读取会话输出 |
+
+
+## 总管 Agent：一个工具控制远端 Coding Agent
+
+`ssh_agent` 只新增一个 MCP 工具，通过 `action` 分派操作。总管先用 `ssh_list_hosts` 获取机器 ID，再用同一个工具启动、查看、追问、回答终端对话和停止远端 Agent。默认返回简短 JSON；不会同时重复返回文本和结构化副本。列表每页最多 50 个 Agent，只有 `read` 返回终端画面。
+
+目标机要求 Linux/macOS、Python 3.6+、Herdr，以及已安装并完成登录的 `codex`、`claude` 或 `opencode`。这些程序需要在 SSH 登录用户的 PATH 中；控制器也会查找该用户的 `~/.local/bin` 和 `~/.cargo/bin`。不需要在 SSH Hub Docker 容器里安装这些程序。Herdr CLI 接口已用 0.8.2 验证；升级后建议重跑下方集成测试。功能与参数参考 [Herdr 自动化文档](https://herdr.dev/docs/agent-automation/)。
+
+首次 `start` 会启动专属的后台 Herdr 会话，但不会自动下载软件、安装集成或替你登录模型账号。会话按 Hub 实例、OAuth 客户端和主机划分，返回的 `herdr_session` 可供管理员在目标机执行 `herdr --session <herdr_session>` 进入查看。此工具只控制这个专属会话里的 Agent，不接管默认 Herdr 会话或任意既有进程。
+
+| action | 参数 | 行为 |
+| --- | --- | --- |
+| `start` | `host_id`, `cwd`；可选 `kind`, `agent_id`, `text` | 在现有绝对路径目录创建独立终端并启动 Agent；kind 默认 codex；text 可提交首条任务 |
+| `list` | `host_id`；可选 `offset` | 列出当前客户端的 Agent，按返回的 `next_offset` 翻页 |
+| `status` | `host_id`, `agent_id` | 查询 Agent 的实时状态 |
+| `read` | `host_id`, `agent_id`；可选 `lines` | 读取当前可见终端快照，默认 40 行、最多 200 行 / 16 KiB |
+| `prompt` | `host_id`, `agent_id`, `text` | 发送任务或追问，text 最多 8 KiB |
+| `keys` | `host_id`, `agent_id`, `keys` | 发送逻辑按键，例如 `["down", "enter"]`；用于审批菜单等终端交互 |
+| `wait` | `host_id`, `agent_id`；可选 `until` | 有限等待状态；默认 idle/done/blocked，可指定 working/unknown 等状态 |
+| `interrupt` | `host_id`, `agent_id` | 向 Agent 发送 Ctrl+C，是否退出由 Agent 自己决定 |
+| `stop` | `host_id`, `agent_id` | 关闭该 Agent 所在终端；后台进程是否终止取决于远端程序 |
+| `result` | `session_id` | 查询本工具请求的审批或执行结果，不再次连接、不重发指令 |
+
+调用示例（均为 `ssh_agent` 的参数）：
+
+```json
+{"action":"start","host_id":"HOST_ID","cwd":"/srv/project-worktree","kind":"codex","agent_id":"fix-login","text":"修复登录问题，运行相关测试并汇报变更。"}
+```
+
+```json
+{"action":"list","host_id":"HOST_ID"}
+```
+
+```json
+{"action":"read","host_id":"HOST_ID","agent_id":"fix-login","lines":60}
+```
+
+```json
+{"action":"prompt","host_id":"HOST_ID","agent_id":"fix-login","text":"请补充登录过期场景的测试。"}
+```
+
+```json
+{"action":"wait","host_id":"HOST_ID","agent_id":"fix-login","until":"blocked","timeout_seconds":20}
+```
+
+所有连接动作复用已有主机权限、SSH 跳板、指纹校验、逐次审批和审计策略，包括读取与监控。返回 `pending` 时，在管理台批准后调用 `{"action":"result","session_id":"返回的 session_id"}`，不要重新提交原请求。审计保存可读的 action/参数、审批人和结果。`result` 只能读取本客户端的 `ssh_agent` 记录。
+
+控制请求默认预算 30 秒，可用 `timeout_seconds` 指定 5–60 秒，并受主机的命令超时上限约束（监控至少 5 秒，启动至少 10 秒，建议 30 秒以上）。它限制一次启动/等待/读取，不限制 Agent 任务的总运行时间。`wait` 返回 `timed_out: true` 只表示没等到状态，不会停止 Agent。SSH 断开、Hub 重启后，可以使用相同客户端和 host_id 重新管理远端会话；Herdr 本身或机器重启后的对话恢复依赖 Agent 的 Herdr 集成及原生恢复能力。
+
+`agent_id` 与 Hub 的 `session_id` 是不同标识：前者定位远端 Agent，后者定位一次经过审计的控制请求。start 不指定 agent_id 时由 Hub 生成，并在等待审批时就返回。对于可能重试的启动，建议自己指定唯一名称；已有同名工作区时拒绝重复创建或重复发送首条任务。启动被登录、仓库信任或权限提示阻塞时，结果可能为失败，但终端已经创建；使用返回的 `pane_id` 作为 agent_id 读取画面、用 keys 处理提示，准备好后再 prompt。控制请求超时或 SSH 断开不能证明指令未送达，应先 list/status/read 再决定是否重试。
+
+`read` 是有界的当前画面快照，不是完整历史或增量日志；长结果建议要求 Agent 写入文件，再通过 SSH 读取。`idle`/`done` 表示终端可接收输入，不能替代测试或成果验收；`prompt_submitted: true` 仅表示输入已提交，不保证任务已开始或完成。总管关闭后若要主动唤醒，需要额外的调度/通知机制。
+
+每个 Agent 有独立终端，但不会自动创建 Git worktree；并行改代码时应先准备各自的 worktree，并分别设置 cwd。会话划分是工具层归属控制，不是操作系统隔离；拥有通用 ssh_exec 的客户端仍拥有相应 SSH 用户的执行能力。Hub 的逐次审批也不代替 Agent 内部命令权限。撤销客户端权限会禁止后续控制，但不会自动终止远端 Agent；需要先 stop 或由管理员处理。
+
+可选的真实 Herdr 集成测试使用临时 SSH 跳板、隔离 Herdr 配置和模拟 Coding Agent，不使用模型额度，也不接触现有会话：
+
+```sh
+SSHHUB_TEST_HERDR="$(command -v herdr)" go test -mod=vendor -race ./cmd/ssh-hub -run TestAgent -v
+```
+
+
+## Agent 友好的工具引用
+
+新资源使用稳定、带类型前缀的短 ID：主机 `host-1`、持久 shell `shell-1`、执行/审批记录 `run-1`、自动命名的 Coding Agent `agent-1`。编号分别递增并持久化，重启不重复分配；旧 ID、历史审计和 transcript 继续可用。认证令牌仍使用原来的随机生成方式。
+
+- `host_id` 支持主机 ID 或当前客户端可访问的唯一主机名，例如 `production`。重名时工具会要求使用 ID，不会猜测目标。
+- `ssh_exec({"host_id":"production","command":"pwd"})` 独立执行命令。
+- `ssh_open_session({"host_id":"production"})` 成功后，使用 `ssh_exec({"connection_id":"shell-1","command":"pwd"})`，无需重复指定主机；同时指定时仍校验两者匹配。
+- `connection_id` 引用持久 shell，`session_id` 引用单次执行或审批记录，例如 `ssh_session_status({"session_id":"run-1"})`。等待审批时查询该记录，不重新提交命令。普通执行或打开 shell 的 `pending` / `running` 结果附带可直接调用的 `next_call`（工具名与参数）。
+
+主机列表按名称稳定排序。审计列表按创建时间排序，新旧格式记录可一起分页读取。

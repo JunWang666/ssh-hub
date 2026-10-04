@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -25,7 +25,7 @@ func persistentTools() []map[string]any {
 		return map[string]any{"name": name, "description": description, "annotations": map[string]any{"readOnlyHint": read, "destructiveHint": !read, "openWorldHint": true}, "inputSchema": map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}}
 	}
 	return []map[string]any{
-		tool("ssh_open_session", "Open a persistent non-interactive POSIX sh on a permitted host, subject to admin approval. Poll ssh_session_status using session_id until completed, then use connection_id with ssh_exec. Preserves cwd, variables and background processes until closed/disconnected; no automatic reconnect. Idle timeout defaults to 24 hours (administrator configurable).", false, map[string]any{"host_id": str("Host to connect to")}, "host_id"),
+		tool("ssh_open_session", "Open a persistent non-interactive POSIX sh on a permitted host, subject to admin approval. Poll ssh_session_status using session_id until completed, then use connection_id with ssh_exec. Preserves cwd, variables and background processes until closed/disconnected; no automatic reconnect. Idle timeout defaults to 24 hours (administrator configurable).", false, map[string]any{"host_id": str("Host ID or unique name from ssh_list_hosts")}, "host_id"),
 		tool("ssh_list_sessions", "List only this client's persistent shells and their last known status.", true, map[string]any{}),
 		tool("ssh_check_session", "Manually probe this client's existing SSH transport. Does not reconnect or execute a command.", true, map[string]any{"connection_id": str("Persistent shell ID")}, "connection_id"),
 		tool("ssh_close_session", "Close this client's persistent shell. Running and background tasks may terminate; command results can become unknown.", false, map[string]any{"connection_id": str("Persistent shell ID")}, "connection_id"),
@@ -55,7 +55,11 @@ func (a *App) callPersistentTool(name string, raw json.RawMessage, ctx context.C
 		if args.HostID == "" {
 			return nil, &jsonRPCError{Code: -32602, Message: "host_id required"}
 		}
-		record, err := a.submitOperation(ctx, args.HostID, "[open persistent shell]", 0, "open", "")
+		hostID, err := a.resolveHostReference(ctx, args.HostID)
+		if err != nil {
+			return connectionToolResult(nil, err), nil
+		}
+		record, err := a.submitOperation(ctx, hostID, "[open persistent shell]", 0, "open", "")
 		if err != nil {
 			return connectionToolResult(nil, err), nil
 		}
@@ -92,23 +96,17 @@ func (a *App) clientAuditList(client, before, connection, status string) ([]Audi
 	if before != "" && !auditIDPattern.MatchString(before) {
 		return records, "", errors.New("invalid cursor")
 	}
-	entries, err := os.ReadDir(a.auditDir())
-	if os.IsNotExist(err) {
-		return records, "", nil
+	if before != "" {
+		cursor, err := a.readAuditLocked(before)
+		if err != nil || cursor.ClientID != client {
+			return nil, "", errors.New("invalid audit cursor")
+		}
 	}
+	all, err := a.sortedAuditsLocked(before)
 	if err != nil {
 		return nil, "", err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
-	for _, entry := range entries {
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		if !auditIDPattern.MatchString(id) || (before != "" && id >= before) {
-			continue
-		}
-		record, err := a.readAuditLocked(id)
-		if err != nil {
-			return nil, "", err
-		}
+	for _, record := range all {
 		if record.ClientID != client || (connection != "" && record.ConnectionID != connection) || (status != "" && record.Status != status) {
 			continue
 		}
@@ -122,8 +120,11 @@ func (a *App) clientAuditList(client, before, connection, status string) ([]Audi
 	}
 	return records, "", nil
 }
+
+var connectionIDPattern = regexp.MustCompile(`^(shell-[1-9][0-9]*|[A-Za-z0-9_-]{32})$`)
+
 func (a *App) readTranscript(client, id string, offset int64) (map[string]any, error) {
-	if len(id) != 32 || strings.ContainsAny(id, "/\\.") || offset < 0 {
+	if !connectionIDPattern.MatchString(id) || offset < 0 {
 		return nil, errors.New("invalid session or offset")
 	}
 	// Persist ownership via the immutable open audit. This also supports reading after restart.

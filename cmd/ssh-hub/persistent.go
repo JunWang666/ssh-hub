@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -230,7 +231,7 @@ func (a *App) openPersistent(ctx context.Context, host Host, key StoredKey, reco
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", host.Address)
+	conn, err := a.dialHostTransport(dialCtx, host)
 	if err != nil {
 		return err
 	}
@@ -414,6 +415,12 @@ func (a *App) listConnections(clientID string) []ConnectionInfo {
 			out = append(out, info)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
 	return out
 }
 func (a *App) checkConnection(ctx context.Context, p *persistentConnection) ConnectionInfo {
@@ -537,13 +544,13 @@ func (a *App) enforceConnectionPolicies() {
 }
 
 func (a *App) recordConnectionClose(info ConnectionInfo, host Host, clientName, reason string) {
-	id, err := randomToken(12)
+	id, err := a.store.resourceID("run")
 	if err != nil {
 		log.Printf("session close audit ID: %v", err)
 		return
 	}
 	now := time.Now().UTC()
-	record := AuditSession{ID: now.Format("20060102T150405") + "_" + id, Operation: "close", ConnectionID: info.ID, ClientID: info.ClientID, ClientName: clientName, HostID: info.HostID, Host: host, Command: "[close persistent shell]", Status: "completed", CreatedAt: now, FinishedAt: now, Output: reason, ExitCode: 0}
+	record := AuditSession{ID: id, Operation: "close", ConnectionID: info.ID, ClientID: info.ClientID, ClientName: clientName, HostID: info.HostID, Host: host, Command: "[close persistent shell]", Status: "completed", CreatedAt: now, FinishedAt: now, Output: reason, ExitCode: 0}
 	a.auditMu.Lock()
 	err = a.saveAuditLocked(record)
 	a.auditMu.Unlock()
