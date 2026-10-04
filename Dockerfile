@@ -1,9 +1,11 @@
-FROM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY vendor ./vendor
 COPY cmd ./cmd
-RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /out/ssh-hub ./cmd/ssh-hub
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -mod=vendor -trimpath -ldflags="-s -w" -o /out/ssh-hub ./cmd/ssh-hub
 
 FROM alpine:3.22
 LABEL org.opencontainers.image.source="https://github.com/JunWang666/ssh-hub"

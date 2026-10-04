@@ -130,6 +130,8 @@ docker run --rm -i -v ssh-hub-agent:/data -e SSHHUB_CREDENTIALS_DIR=/data/client
 
 stdio 模式不要使用 `-t`。私有 GHCR 包首次拉取前需要有读取权限的 Docker 登录。
 
+GitHub Actions 会在 `main` 更新时构建并发布 `linux/amd64`、`linux/arm64` 多架构镜像（`main` 和 `latest` 标签）；推送 `v*` 标签时还会发布对应的版本标签。Pull request 只构建、不推送镜像。Docker 会按机器架构自动选择镜像。
+
 原生只支持浏览器回调的 MCP 客户端不会自动切换设备码流程；使用上述 stdio 入口可以避免它的 localhost 回调问题。ChatGPT 仍可直接连接 HTTPS `/mcp`，使用现有授权码 + PKCE 流程。
 
 服务端设备授权端点为 `POST /oauth/device/code`、`GET/POST /oauth/device/verify`；令牌端点接受 `urn:ietf:params:oauth:grant-type:device_code`。动态客户端注册时声明该 grant type，可不提供 redirect URI。
