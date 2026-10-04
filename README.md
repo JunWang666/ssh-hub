@@ -122,10 +122,10 @@ go build -mod=vendor -o ssh-hub ./cmd/ssh-hub
 
 ```sh
 docker run --rm -it -v ssh-hub-agent:/data -e SSHHUB_CREDENTIALS_DIR=/data/client \
-  ghcr.io/jungoudai/ssh-hub:latest login --url https://your-host.example --profile remote-agent
+  ghcr.io/junwang666/ssh-hub:latest login --url https://your-host.example --profile remote-agent
 
 docker run --rm -i -v ssh-hub-agent:/data -e SSHHUB_CREDENTIALS_DIR=/data/client \
-  ghcr.io/jungoudai/ssh-hub:latest mcp --url https://your-host.example --profile remote-agent
+  ghcr.io/junwang666/ssh-hub:latest mcp --url https://your-host.example --profile remote-agent
 ```
 
 stdio 模式不要使用 `-t`。私有 GHCR 包首次拉取前需要有读取权限的 Docker 登录。
